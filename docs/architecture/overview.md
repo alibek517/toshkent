@@ -12,6 +12,27 @@ The system consists of:
 
 ### Components
 
+```mermaid
+graph TD
+    User([Telegram User]) -->|Posts Message| Telegram[Telegram Cloud]
+    
+    subgraph UserBot Infrastructure
+        Client[UserBot Core (main.py)]
+        Portal[Web Portal (portal_app.py)]
+        DB[(Supabase PostgreSQL)]
+    end
+
+    Telegram -->|Updates| Client
+    Client -->|Forward Message| Telegram
+    Client -->|Save Message| DB
+    Client -->|Check Keywords| DB
+    
+    Portal -->|Read Messages| DB
+    Portal -->|Take Screenshots| Client
+    
+    Admin([Admin]) -->|View Portal| Portal
+```
+
 #### A. UserBot Core (`main.py`)
 *   **Multi-Account Management**: Handles multiple Telegram sessions (`sessions/` directory).
 *   **Group Monitoring**: Dictionary-based caching of watched groups to avoid redundant network calls.
@@ -40,6 +61,29 @@ The system consists of:
     *   `account_groups`: Mapping of which account is in which group.
 
 ### Data Flow
+
+```mermaid
+sequenceDiagram
+    participant User as Telegram User
+    participant TG as Telegram
+    participant Bot as Kevin (UserBot)
+    participant DB as Supabase
+    participant Drivers as Drivers Group
+
+    User->>TG: Sends Message to Public Group
+    TG->>Bot: Forward Update (New Message)
+    
+    Bot->>Bot: internal: Check Blocked Group?
+    alt Group not blocked
+        Bot->>Bot: internal: Regex Match Keywords
+        
+        opt Keyword Match Found
+            Bot->>DB: Save Captured Message (Async)
+            Bot->>DB: Log Keyword Hit (Async)
+            Bot->>Drivers: Forward Message with Context
+        end
+    end
+```
 
 1.  **Initialization**:
     *   App starts, connects to Supabase.
