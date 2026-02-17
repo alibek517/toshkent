@@ -8,5 +8,5 @@
 3.  **Generate**: Write clean, modern Python code. Prefer `pydantic` for data validation if we refactor.
 
 ## Context Awareness
-- Always check `docs/beads.md` to see what Antigravity has just finished.
+- Always run `bd list` to see what Antigravity has just finished or what is pending.
 - When generating code, include comments explaining *why*, not just *what*.

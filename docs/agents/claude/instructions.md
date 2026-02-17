@@ -8,5 +8,5 @@
 3.  **Test**: Write complex test cases for the regex engine and `portal_app.py` logic.
 
 ## Context
-- Use `docs/beads.md` to track the history of changes.
-- If you find a bug, document it in `docs/known_issues.md` (create if missing).
+- Use `bd list` to track the history of changes.
+- If you find a bug, document it in `docs/known_issues.md` (create if missing) or `bd create`.

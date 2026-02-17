@@ -1,7 +1,7 @@
 # Agent Instructions: General
 
 This project involves multiple AI agents working in tandem. 
-**ALL AGENTS MUST READ `docs/beads.md` FIRST to understand the current state.**
+**ALL AGENTS MUST USE `bd` CLI to manage context.**
 
 ## Roles
 - **Gemini**: Primary code generator and architect.
@@ -9,8 +9,8 @@ This project involves multiple AI agents working in tandem.
 - **Claude**: Expert reviewer and complex logic debugger.
 
 ## Communication Protocol
-1.  **Context**: Before starting work, check `docs/beads.md`.
-2.  **Handover**: If you stop partway, write a "Pending" bead.
+1.  **Context**: Before starting work, run `bd list` to see active tasks.
+2.  **Handover**: If you stop partway, create a new task with `bd create`.
 3.  **Documentation**: Update `docs/architecture/` if you change core logic.
 
 ---
