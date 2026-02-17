@@ -62,6 +62,8 @@ supabase: Optional[SupabaseClient] = None
 keywords_cache: List[str] = []
 keywords_regex = None
 last_cache_update = 0.0
+_keywords_lock = asyncio.Lock()
+_seen_messages: Dict[tuple, float] = {}
 
 watched_groups_cache = set()
 account_groups_cache: Dict[str, set] = {}
@@ -374,23 +376,27 @@ async def refresh_keywords():
     global keywords_cache, keywords_regex, last_cache_update
     if not supabase:
         return
-    try:
-        result = await sb_execute(lambda: supabase.table("keywords").select("keyword").execute())
-        data = getattr(result, "data", None) or []
-        keywords_cache = [k["keyword"].lower() for k in data if k.get("keyword")]
-        last_cache_update = time.time()
+    async with _keywords_lock:
+        # Double-check inside lock to avoid redundant refreshes
+        if time.time() - last_cache_update <= CACHE_TTL:
+            return
+        try:
+            result = await sb_execute(lambda: supabase.table("keywords").select("keyword").execute())
+            data = getattr(result, "data", None) or []
+            keywords_cache = [k["keyword"].lower() for k in data if k.get("keyword")]
+            last_cache_update = time.time()
 
-        if keywords_cache:
-            keywords_regex = re.compile(
-                "|".join(re.escape(k) for k in sorted(keywords_cache, key=len, reverse=True)),
-                re.IGNORECASE
-            )
-        else:
-            keywords_regex = None
+            if keywords_cache:
+                keywords_regex = re.compile(
+                    "|".join(re.escape(k) for k in sorted(keywords_cache, key=len, reverse=True)),
+                    re.IGNORECASE
+                )
+            else:
+                keywords_regex = None
 
-        print(f"✅ Kalit so'zlar yangilandi: {len(keywords_cache)} ta")
-    except Exception as e:
-        print(f"❌ Kalit so'zlar yangilashda xato: {e}")
+            print(f"✅ Kalit so'zlar yangilandi: {len(keywords_cache)} ta")
+        except Exception as e:
+            print(f"❌ Kalit so'zlar yangilashda xato: {e}")
 
 
 async def periodic_keywords_refresh():
@@ -486,13 +492,14 @@ async def sync_account_groups(phone: str, groups: list):
             return
 
         for group in new_groups:
+            _g = group  # capture by value to avoid lambda closure bug
             try:
-                await sb_execute(lambda: supabase.table("account_groups").insert({
+                await sb_execute(lambda _g=_g: supabase.table("account_groups").insert({
                     "phone_number": phone,
-                    "group_id": group["group_id"],
-                    "group_name": group["group_name"],
+                    "group_id": _g["group_id"],
+                    "group_name": _g["group_name"],
                 }).execute())
-                account_groups_cache.setdefault(phone, set()).add(group["group_id"])
+                account_groups_cache.setdefault(phone, set()).add(_g["group_id"])
             except Exception:
                 pass
 
@@ -534,10 +541,12 @@ async def sync_all_groups(client: Client, phone: str) -> list:
                 continue
             try:
                 is_blocked = normalize_chat_id(g["group_id"]) in BLOKED_GROUP_IDS_NORM
-                await sb_execute(lambda: supabase.table("watched_groups").insert({
-                    "group_id": g["group_id"],
-                    "group_name": g["group_name"],
-                    "is_blocked": is_blocked
+                _g = g  # capture by value to avoid lambda closure bug
+                _is_blocked = is_blocked
+                await sb_execute(lambda _g=_g, _is_blocked=_is_blocked: supabase.table("watched_groups").insert({
+                    "group_id": _g["group_id"],
+                    "group_name": _g["group_name"],
+                    "is_blocked": _is_blocked
                 }).execute())
                 watched_groups_cache.add(g["group_id"])
             except Exception:
@@ -757,6 +766,20 @@ def create_message_handler(phone: str):
         if not m:
             return
         matched_keyword = m.group(0).lower()
+
+        # Deduplicate: prevent same message being forwarded by multiple accounts
+        cache_key = (normalize_chat_id(chat_id), int(message.id))
+        now = time.time()
+        if cache_key in _seen_messages and now - _seen_messages[cache_key] < 60:
+            return
+        _seen_messages[cache_key] = now
+
+        # Cleanup old entries periodically
+        if len(_seen_messages) > 5000:
+            cutoff = now - 120
+            to_del = [k for k, v in _seen_messages.items() if v < cutoff]
+            for k in to_del:
+                del _seen_messages[k]
 
         sender_html, sender_url, sender_plain = build_sender_anchor(message)
         message_link = get_message_link(message)
