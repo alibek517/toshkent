@@ -168,57 +168,140 @@ async def safe_delete_session_files(session_base: str, tries: int = 8) -> bool:
     return ok_any
 
 
-def strip_links(text: str) -> str:
-    if not text:
-        return ""
-    text = URL_RE.sub("", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    text = re.sub(r"[ \t]{2,}", " ", text)
-    return text.strip()
-
 
 def extract_text_and_urls(message: Message) -> Tuple[str, List[str], str]:
     """
-    Katta guruhlar uchun:
-      - post faqat link bo'lsa ham forward bo'lsin
-      - post faqat media bo'lsa ham forward bo'lsin
+    Extracts text and URLs.
+    Now preserves HTML formatting for the main text!
     """
-    raw = message.text or message.caption or ""
-    urls: List[str] = []
+    raw_text = message.text or message.caption or ""
+    entities = message.entities or message.caption_entities
+    
+    # Generate HTML with entities preserved
+    if raw_text:
+        if entities:
+            # We want to preserve the original formatting (text mentions/links)
+            # but we also want to avoid huge spam blocks.
+            # Pyrogram provides `.text.html` or `.caption.html` if we access it via the object, 
+            # BUT message.text is just a string. 
+            # We rely on message.text.html property from pyrogram if available, 
+            # otherwise simplistic replacement.
+            # However, `message` IS a pyrogram Message object, so it has .text and .caption attributes 
+            # which are strings, but the Message object itself usually has helpers.
+            # actually message.text is a string. `message.text.html` is not valid.
+            # wait, Pyrogram *does* provide `message.text.html` if using `client.get_messages`? 
+            # No, `message.text` is a str.
+            # Correct way: use `message.text.html` is WRONG.
+            # Correct way: Manually rebuild HTML from entities.
+            
+            # Since manually rebuilding is complex (nested entities), let's see if we can use 
+            # a simple approach: Just escape it and let it be plain text? 
+            # NO, the user explicitely complained that links (blue text) are lost.
+            # We MUST rebuild the HTML.
+            
+            # Fortunately, Pyrogram's `Message` object usually has a `.text` property which is a string.
+            # But recent Pyrogram versions MIGHT have a utility or we write one.
+            # Let's write a simple entity-to-html converter.
+            
+            # ALGORITHM: Sort entities by offset. Insert tags.
+            # But wait, `main.py` imports `html`.
+            # Let's use a simpler heuristic for now: 
+            # Since likely the only important ones are TEXT_LINK and MENTION.
+            
+            # Actually, the userbot simply forwards the text. 
+            # If we just do `message.text.html` (if supported in pyrogram's custom Str object) that would be great.
+            # Pyrogram's documentation says `message.text` is a string.
+            # BUT, we can use `message.text.markdown` or similar if we use a specific parser? No.
+            
+            # Alternative: Assume we can construct a basic HTML string.
+            # Or use `unparse` from pyrogram? No, that's internal.
+            
+            # Let's fallback to: Just return escaped raw text if we can't easily parse.
+            # BUT wait, the user complaint is "Ko'k yozuv" (blue text) -> Text Link.
+            # If we strip links, we lose the URL.
+            # We MUST rebuild it.
+            
+            # Let's implement a basic builder.
+            final_text = ""
+            last_offset = 0
+            
+            # Sort entities just in case
+            sorted_ents = sorted(entities, key=lambda e: e.offset)
+            
+            current_text_idx = 0
+            built_text = []
+            
+            # Use raw_text as source
+            # This is a naive implementation that doesn't handle overlapping (nested) entities correctly
+            # but Telegram usually doesn't allow overlapping entities except for specific cases.
+            
+            # If this is too risky, we can just use `raw_text` and assume the driver's client 
+            # will regex-match URLs. But `Text Link` (hidden URL) won't show.
+            
+            # Let's try to preserve AT LEAST the Text Links and Mentions.
+            
+            for ent in sorted_ents:
+                if ent.offset < current_text_idx:
+                    continue # Skip overlap
+                
+                # Append text before entity
+                built_text.append(html.escape(raw_text[current_text_idx:ent.offset]))
+                
+                chunk = raw_text[ent.offset : ent.offset + ent.length]
+                escaped_chunk = html.escape(chunk)
+                
+                if ent.type == MessageEntityType.TEXT_LINK:
+                    built_text.append(f'<a href="{ent.url}">{escaped_chunk}</a>')
+                elif ent.type == MessageEntityType.URL:
+                    built_text.append(f'<a href="{chunk}">{escaped_chunk}</a>')
+                elif ent.type == MessageEntityType.BOLD:
+                    built_text.append(f'<b>{escaped_chunk}</b>')
+                elif ent.type == MessageEntityType.ITALIC:
+                    built_text.append(f'<i>{escaped_chunk}</i>')
+                elif ent.type == MessageEntityType.CODE:
+                    built_text.append(f'<code>{escaped_chunk}</code>')
+                elif ent.type == MessageEntityType.TEXT_MENTION and ent.user:
+                     # Mention with User object
+                     built_text.append(ent.user.mention(chunk, style="html"))
+                else:
+                    built_text.append(escaped_chunk)
+                
+                current_text_idx = ent.offset + ent.length
+            
+            # Append remaining
+            built_text.append(html.escape(raw_text[current_text_idx:]))
+            final_text = "".join(built_text)
 
-    ents = None
-    if message.text and message.entities:
-        ents = message.entities
-    elif message.caption and message.caption_entities:
-        ents = message.caption_entities
-
-    if raw and ents:
-        for ent in ents:
-            try:
-                if ent.type == MessageEntityType.URL:
-                    urls.append(raw[ent.offset: ent.offset + ent.length])
-                elif ent.type == MessageEntityType.TEXT_LINK and getattr(ent, "url", None):
-                    urls.append(ent.url)
-            except Exception:
-                pass
-
-    if raw:
-        urls.extend(URL_RE.findall(raw))
-
-    urls = uniq_keep_order([u.strip() for u in urls if u and u.strip()])
-    cleaned = strip_links(raw)
-
-    if not cleaned:
-        if urls:
-            cleaned = "🔗 Linkli post"
         else:
-            has_media = bool(
-                message.photo or message.video or message.document or message.audio or
-                message.voice or message.video_note or message.animation or message.sticker
-            )
-            cleaned = "📎 Media post" if has_media else (raw.strip() if raw else "📩 Xabar")
+            final_text = html.escape(raw_text)
+    else:
+        # No text (media only)
+        final_text = ""
 
-    return cleaned, urls, raw
+    # Extract URLs for the button/logic (legacy logic kept for compatibility)
+    urls: List[str] = []
+    if entities:
+        for ent in entities:
+             if ent.type == MessageEntityType.URL:
+                 urls.append(raw_text[ent.offset: ent.offset + ent.length])
+             elif ent.type == MessageEntityType.TEXT_LINK and getattr(ent, "url", None):
+                 urls.append(ent.url)
+    
+    urls.extend(URL_RE.findall(raw_text))
+    urls = uniq_keep_order([u.strip() for u in urls if u and u.strip()])
+    
+    # Clean logic: We don't want to strip links from the DISPLAY text anymore 
+    # because that breaks text mentions. We just want to check keywords.
+    # So we return: (html_text, urls, raw_plain_text)
+    
+    if not final_text:
+        has_media = bool(
+            message.photo or message.video or message.document or message.audio or
+            message.voice or message.video_note or message.animation or message.sticker
+        )
+        final_text = "📎 Media post" if has_media else "📩 Xabar"
+
+    return final_text, urls, raw_text
 
 
 def get_message_link(message: Message) -> str:
@@ -234,35 +317,50 @@ def get_chat_link(message: Message) -> str:
     chat = message.chat
     if chat.username:
         return f"https://t.me/{chat.username}"
+    # Private group logic
     return get_message_link(message)
 
 
 def build_sender_anchor(message: Message) -> Tuple[str, Optional[str], str]:
     """
     returns:
-      sender_html: HTML text
-      sender_url: inline button URL (username bo'lsa t.me, bo'lmasa tg://user?id=..)
-      sender_plain: oddiy text (DBga)
+      sender_html: HTML text with link
+      sender_url: URL for button (if valid)
+      sender_plain: Plain text name
     """
     if message.from_user:
         u = message.from_user
-        title = f"@{u.username}" if u.username else (u.first_name or "User")
-        if u.username:
-            url = f"https://t.me/{u.username}"
-        else:
-            url = f"tg://user?id={u.id}"
-        sender_html = f'<a href="{html.escape(url)}">{html.escape(title)}</a>'
-        return sender_html, url, title
+        
+        # Use Pyrogram's mention for HTML (handles escaping and ID links automatically)
+        name = f"@{u.username}" if u.username else (u.first_name or "User")
+        try:
+            sender_html = u.mention(name, style="html")
+        except:
+             # Fallback if u.mention fails
+             url = f"https://t.me/{u.username}" if u.username else f"tg://user?id={u.id}"
+             sender_html = f'<a href="{html.escape(url)}">{html.escape(name)}</a>'
+        
+        sender_plain = name
+        sender_url = f"https://t.me/{u.username}" if u.username else f"tg://user?id={u.id}"
+        return sender_html, sender_url, sender_plain
 
     if getattr(message, "sender_chat", None):
         sc = message.sender_chat
         title = sc.title or "Sender"
+        
+        sender_plain = title
         if sc.username:
             url = f"https://t.me/{sc.username}"
-            return f'<a href="{html.escape(url)}">{html.escape(title)}</a>', url, title
-
-        ml = get_message_link(message)
-        return f'<a href="{html.escape(ml)}">{html.escape(title)}</a>', None, title
+            try:
+                # sender_chat might not have mention method in older pyrogram? It usually does.
+                sender_html = f'<a href="{url}">{html.escape(title)}</a>'
+            except:
+                sender_html = f'<a href="{url}">{html.escape(title)}</a>'
+            return sender_html, url, sender_plain
+        else:
+            # Private group/channel sender
+            sender_html = html.escape(title)
+            return sender_html, None, sender_plain
 
     return "Noma'lum", None, "Noma'lum"
 
@@ -664,7 +762,9 @@ def create_message_handler(phone: str):
         message_link = get_message_link(message)
         group_link = get_chat_link(message)
 
-        safe_text = html.escape(cleaned_text)
+        # cleaned_text is already HTML-safe (generated by extract_text_and_urls)
+        # So we do NOT escape it again.
+        safe_text = cleaned_text
 
         extra_links_text = ""
         if urls:
