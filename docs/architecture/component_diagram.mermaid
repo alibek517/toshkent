@@ -1,0 +1,18 @@
+graph TD
+    User([Telegram User]) -->|Posts Message| Telegram[Telegram Cloud]
+    
+    subgraph UserBot Infrastructure
+        Client[UserBot Core (main.py)]
+        Portal[Web Portal (portal_app.py)]
+        DB[(Supabase PostgreSQL)]
+    end
+
+    Telegram -->|Updates| Client
+    Client -->|Forward Message| Telegram
+    Client -->|Save Message| DB
+    Client -->|Check Keywords| DB
+    
+    Portal -->|Read Messages| DB
+    Portal -->|Take Screenshots| Client
+    
+    Admin([Admin]) -->|View Portal| Portal
