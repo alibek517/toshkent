@@ -49,3 +49,4 @@ dist/
 *.swp
 *.bak
 sessions/
+.pytest_cache/
