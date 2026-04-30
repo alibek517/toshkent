@@ -6,7 +6,7 @@ import time
 import html
 import re
 import uuid
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any, Set
 
 from dotenv import load_dotenv
 from pyrogram import Client, filters
@@ -40,6 +40,13 @@ QUEUE_MAX = int(os.getenv("QUEUE_MAX", "50000") or "50000")
 
 CACHE_TTL = int(os.getenv("CACHE_TTL", "300") or "300")
 SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL", "1800") or "1800")
+
+# Debug mode - terminalga print chiqishini yoqish/o'chirish
+DEBUG = False
+
+# Majburiy obuna guruhi ID (botdan foydalanish uchun a'zo bo'lish shart)
+REQUIRED_CHANNEL_ID = os.getenv("REQUIRED_CHANNEL_ID", "-1002188362376").strip()
+REQUIRED_CHANNEL_LINK = os.getenv("REQUIRED_CHANNEL_LINK", "https://t.me/+abcdefghijkl").strip()
 
 BLOKEDGRUP_ID_RAW = os.getenv("BLOKEDGRUP_ID", "")
 BLOKED_GROUP_IDS = set()
@@ -76,10 +83,75 @@ ALL_PHONES: List[str] = []
 send_queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAX)
 aiohttp_session: Optional[aiohttp.ClientSession] = None
 
+# Tasdiqlangan userlar (kontakt ulashganlar)
+approved_users: Set[int] = set()
+pending_contact: Set[int] = set()  # Kontakt kutilayotgan userlar
+
+_bot_last_update_id: int = 0
+_bot_polling_offset: int = 0
+
 _admin_last_notify: Dict[str, float] = {}
 ADMIN_NOTIFY_TTL = 120
 
 URL_RE = re.compile(r"(https?://\S+|t\.me/\S+|telegram\.me/\S+)", re.IGNORECASE)
+
+
+def normalize_text(text: str) -> str:
+    """
+    Matnni normalizatsiya qilish - Cyrillic harflarini Latin ekvivalentlariga almashtirish.
+    Bu 'ОДАМ' (Cyrillic) va 'odam' (Latin) ni bir xil qilib qidirish uchun kerak.
+    """
+    if not text:
+        return text
+    
+    # Cyrillic -> Latin mapping (look-alike characters)
+    cyrillic_to_latin = {
+        'а': 'a', 'А': 'A',
+        'о': 'o', 'О': 'O',
+        'е': 'e', 'Е': 'E',
+        'с': 'c', 'С': 'C',
+        'х': 'x', 'Х': 'X',
+        'р': 'p', 'Р': 'P',
+        'у': 'y', 'У': 'Y',
+        'к': 'k', 'К': 'K',
+        'м': 'm', 'М': 'M',
+        'т': 't', 'Т': 'T',
+        'в': 'b', 'В': 'B',
+        'н': 'n', 'Н': 'N',
+        'г': 'g', 'Г': 'G',
+        'з': 'z', 'З': 'Z',
+        'д': 'd', 'Д': 'D',
+        'л': 'l', 'Л': 'L',
+        'и': 'i', 'И': 'I',
+        'п': 'p', 'П': 'P',
+        'р': 'r', 'Р': 'R',
+        'с': 's', 'С': 'S',
+        'у': 'u', 'У': 'U',
+        'ф': 'f', 'Ф': 'F',
+        'ц': 'ts', 'Ц': 'Ts',
+        'ч': 'ch', 'Ч': 'Ch',
+        'ш': 'sh', 'Ш': 'Sh',
+        'щ': 'sch', 'Щ': 'Sch',
+        'ъ': '', 'Ъ': '',
+        'ы': 'y', 'Ы': 'Y',
+        'ь': '', 'Ь': '',
+        'э': 'e', 'Э': 'E',
+        'ю': 'yu', 'Ю': 'Yu',
+        'я': 'ya', 'Я': 'Ya',
+        'ў': 'o', 'Ў': 'O',
+        'қ': 'q', 'Қ': 'Q',
+        'ғ': 'g', 'Ғ': 'G',
+        'ҳ': 'h', 'Ҳ': 'H',
+        'ҷ': 'j', 'Ҷ': 'J',
+    }
+    
+    result = []
+    for char in text:
+        if char in cyrillic_to_latin:
+            result.append(cyrillic_to_latin[char])
+        else:
+            result.append(char)
+    return ''.join(result)
 
 
 def normalize_chat_id(chat_id: int) -> int:
@@ -141,6 +213,464 @@ async def notify_admin_once(key: str, text: str):
             await resp.text()
     except Exception:
         pass
+
+
+async def send_bot_message(chat_id: int, text: str, parse_mode: str = "HTML") -> bool:
+    """Bot orqali xabar yuborish (yordamchi funksiya)"""
+    global aiohttp_session
+    if not BOT_TOKEN or not aiohttp_session:
+        return False
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+    try:
+        async with aiohttp_session.post(url, json=payload, timeout=20) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+async def check_user_subscription(user_id: int) -> bool:
+    """User majburiy kanal/guruhga a'zomi tekshirish"""
+    if not BOT_TOKEN or not aiohttp_session or not REQUIRED_CHANNEL_ID:
+        return True
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
+    payload = {"chat_id": int(REQUIRED_CHANNEL_ID), "user_id": user_id}
+    try:
+        async with aiohttp_session.post(url, json=payload, timeout=20) as resp:
+            if resp.status == 200:
+                j = await resp.json()
+                if j.get("ok"):
+                    status = j.get("result", {}).get("status", "")
+                    # 'left' va 'kicked' holatlari tashqari barchasi a'zolik
+                    return status not in ("left", "kicked")
+            return False
+    except Exception:
+        return False
+
+
+async def send_subscription_request(chat_id: int) -> bool:
+    """Majburiy obuna xabarini yuborish"""
+    text = (
+        "📢 <b>Botdan foydalanish uchun obuna bo'lish shart!</b>\n\n"
+        "Iltimos, quyidagi tugmani bosib guruhimizga a'zo bo'ling.\n"
+        "A'zo bo'lganingizdan keyin /start buyrug'ini qayta yuboring."
+    )
+    if not BOT_TOKEN or not aiohttp_session:
+        return False
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "reply_markup": {
+            "inline_keyboard": [[
+                {"text": "📢 Guruhga obuna bo'lish", "url": REQUIRED_CHANNEL_LINK}
+            ]]
+        }
+    }
+    try:
+        async with aiohttp_session.post(url, json=payload, timeout=20) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+async def require_subscription(chat_id: int, user_id: int) -> bool:
+    """Bot buyruqlari uchun obuna tekshiruvi"""
+    is_subscribed = await check_user_subscription(user_id)
+    if not is_subscribed:
+        await send_subscription_request(chat_id)
+        return False
+    return True
+
+
+async def load_approved_users():
+    """Bazadan tasdiqlangan userlarni yuklash"""
+    global approved_users
+    if not supabase:
+        return
+    try:
+        result = await sb_execute(lambda: supabase.table("approved_users").select("user_id").execute())
+        data = getattr(result, "data", None) or []
+        approved_users = {int(row["user_id"]) for row in data}
+        print(f"✅ Tasdiqlangan userlar yuklandi: {len(approved_users)} ta")
+    except Exception as e:
+        print(f"⚠️ approved_users yuklashda xato: {e}")
+
+
+async def save_approved_user(user_id: int, phone: str = None, username: str = None):
+    """Tasdiqlangan userni bazaga saqlash"""
+    if not supabase:
+        return False
+    try:
+        await sb_execute(lambda: supabase.table("approved_users").insert({
+            "user_id": user_id,
+            "phone": phone,
+            "username": username,
+        }).execute())
+        approved_users.add(user_id)
+        return True
+    except Exception as e:
+        print(f"⚠️ approved_user saqlashda xato: {e}")
+        return False
+
+
+async def handle_start_command(chat_id: int, user_id: int, username: str = None):
+    """/start komandasini qayta ishlash"""
+    global pending_contact
+
+    # Admin obuna tekshiruvidan ozod
+    if user_id != ADMIN_ID:
+        is_subscribed = await check_user_subscription(user_id)
+        if not is_subscribed:
+            await send_subscription_request(chat_id)
+            return
+    
+    # Admin uchun statistika
+    if user_id == ADMIN_ID:
+        phones_list = ALL_PHONES or list(running_clients.keys()) or PHONE_NUMBERS_ENV_FALLBACK
+        total_groups = 0
+        total_active = 0
+        active_accounts = 0
+
+        for phone in phones_list:
+            stats = account_stats.get(phone, {})
+            total = int(stats.get("groups_count", 0) or 0)
+            active = int(stats.get("active_count", 0) or 0)
+            total_groups += total
+            total_active += active
+            if total > 0:
+                active_accounts += 1
+
+        status_text = (
+            f"📊 <b>ADMIN PANEL</b>\n"
+            f"{'=' * 30}\n\n"
+            f"📱 <b>Akkauntlar:</b> {len(phones_list)} ta\n"
+            f"   └ Faol: {active_accounts} ta\n\n"
+            f"👥 <b>Guruhlar:</b>\n"
+            f"   └ Jami: {total_groups} ta\n"
+            f"   └ Faol: {total_active} ta\n\n"
+            f"🚫 <b>Bloklangan:</b> {len(BLOKED_GROUP_IDS_NORM)} ta\n"
+            f"💾 <b>Keshda:</b> {len(watched_groups_cache)} ta\n\n"
+            f"🔑 <b>Kalit so'zlar:</b> {len(keywords_cache)} ta\n"
+            f"👤 <b>Tasdiqlangan userlar:</b> {len(approved_users)} ta\n"
+            f"⏱ <b>Yangilanish:</b> {CACHE_TTL // 60} daqiqa\n"
+        )
+        await send_bot_message(chat_id, status_text)
+        return
+    
+    # Oddiy user uchun
+    if user_id in approved_users:
+        await send_bot_message(
+            chat_id,
+            "👋 Salom! Siz allaqachon tasdiqlangan siz.\n\n"
+            "💡 <b>Foydalanish:</b>\n"
+            "<code>/user {telegram_id}</code> - User ma'lumotlarini ko'rish\n\n"
+            "Masalan: <code>/user 7748145808</code>"
+        )
+        return
+    
+    # Kontakt kutilayotgan user
+    if user_id in pending_contact:
+        await send_bot_message(
+            chat_id,
+            "⏳ Iltimos, quyidagi tugmani bosib kontaktingizni ulashing.\n"
+            "Bu faqat bir marta so'raladi va xavfsiz saqlanadi."
+        )
+        return
+    
+    # Yangi user - kontakt so'rash
+    pending_contact.add(user_id)
+    await send_bot_message(
+        chat_id,
+        "👋 <b>Salom!</b>\n\n"
+        "Botdan foydalanish uchun kontakt ma'lumotlaringizni ulashing.\n"
+        "Bu <b>faqat bir marta</b> so'raladi va xavfsiz saqlanadi.\n\n"
+        "⬇️ Quyidagi tugmani bosing:",
+        reply_markup={
+            "keyboard": [[{"text": "📱 Kontaktni ulashish", "request_contact": True}]],
+            "resize_keyboard": True,
+            "one_time_keyboard": True
+        }
+    )
+
+
+async def handle_contact(message: dict):
+    """Kontakt ulashishni qayta ishlash"""
+    global pending_contact, approved_users
+    
+    user_id = message.get("from", {}).get("id", 0)
+    chat_id = message.get("chat", {}).get("id", 0)
+    contact = message.get("contact")
+    
+    if not contact:
+        return
+    
+    # Kontakt userning o'zi kontaktimi tekshirish
+    contact_user_id = contact.get("user_id")
+    if contact_user_id and contact_user_id != user_id:
+        await send_bot_message(chat_id, "❌ Faqat o'zingizning kontaktingizni ulashing.")
+        return
+    
+    # Tasdiqlash
+    phone = contact.get("phone_number", "")
+    username = message.get("from", {}).get("username", "")
+    
+    # Bazaga saqlash
+    await save_approved_user(user_id, phone, username)
+    
+    # Set dan o'chirish va approved ga qo'shish
+    if user_id in pending_contact:
+        pending_contact.remove(user_id)
+    approved_users.add(user_id)
+    
+    # Klaviaturani olib tashlash va tasdiqlash xabari
+    await send_bot_message(
+        chat_id,
+        "✅ <b>Tasdiqlandi!</b>\n\n"
+        "Endi siz /user buyrug'i orqali user ma'lumotlarini ko'rishingiz mumkin.\n\n"
+        "💡 <b>Foydalanish:</b>\n"
+        "<code>/user {telegram_id}</code>\n\n"
+        "Masalan: <code>/user 7748145808</code>",
+        reply_markup={"remove_keyboard": True}
+    )
+
+
+async def handle_user_lookup(chat_id: int, user_id: int, text: str):
+    """/user {id} komandasi - user ma'lumotlarini ko'rsatish"""
+    # Majburiy obuna tekshiruvi
+    if user_id != ADMIN_ID:
+        is_subscribed = await check_user_subscription(user_id)
+        if not is_subscribed:
+            await send_subscription_request(chat_id)
+            return
+    
+    # Admin yoki tasdiqlangan userlar uchun ruxsat
+    if user_id != ADMIN_ID and user_id not in approved_users:
+        await send_bot_message(
+            chat_id, 
+            "⛔ <b>Ruxsat yo'q!</b>\n\n"
+            "Avval <code>/start</code> buyrug'ini bosing va kontakt ulashing.\n"
+            "Tasdiqlangan userlar /user buyrug'idan foydalanishi mumkin."
+        )
+        return
+
+    # Parse command: /user 123456789
+    parts = text.strip().split()
+    if len(parts) < 2:
+        await send_bot_message(
+            chat_id,
+            "📋 <b>User ma'lumotlari</b>\n\n"
+            "Foydalanish: <code>/user {ID}</code>\n"
+            "Masalan: <code>/user 7748145808</code>\n\n"
+            "Bu komanda user haqida bazadan ma'lumot olish uchun ishlatiladi."
+        )
+        return
+
+    target_id = parts[1]
+    if not target_id.isdigit():
+        await send_bot_message(chat_id, "❌ ID faqat raqam bo'lishi kerak. Masalan: <code>/user 123456789</code>")
+        return
+
+    # Search in captured_messages for this user
+    if not supabase:
+        await send_bot_message(chat_id, "❌ Bazaga ulanish yo'q.")
+        return
+
+    try:
+        # Look for messages from this user by sender_link (tg://user?id=...)
+        sender_link = f"tg://user?id={target_id}"
+        result = await sb_execute(
+            lambda: supabase.table("captured_messages")
+            .select("*")
+            .eq("sender_link", sender_link)
+            .order("created_at", desc=True)
+            .limit(5)
+            .execute()
+        )
+        
+        data = getattr(result, "data", None) or []
+        
+        if not data:
+            # Fallback: search in text content
+            result = await sb_execute(
+                lambda: supabase.table("captured_messages")
+                .select("*")
+                .ilike("text", f"%🆔 ID: <code>{target_id}</code>%")
+                .order("created_at", desc=True)
+                .limit(5)
+                .execute()
+            )
+            data = getattr(result, "data", None) or []
+
+        if not data:
+            await send_bot_message(
+                chat_id,
+                f"ℹ️ User <code>{target_id}</code> haqida ma'lumot topilmadi.\n\n"
+                f"🔍 Bazada ushbu ID bilan xabarlar yo'q.\n"
+                f"💡 User hali kalit so'z yozmagan bo'lishi mumkin."
+            )
+            return
+
+        # Build response
+        response = f"👤 <b>User ma'lumotlari</b>\n🆔 ID: <code>{target_id}</code>\n\n"
+        response += f"📨 <b>So'ngi xabarlar ({len(data)} ta):</b>\n\n"
+        
+        for idx, msg in enumerate(data, 1):
+            group_name = msg.get("group_name", "Noma'lum guruh")
+            text_preview = (msg.get("text", "") or "")[:100]
+            keyword = msg.get("keyword", "N/A")
+            created = msg.get("created_at", "N/A")
+            
+            response += (
+                f"{idx}. 📍 <b>{html.escape(group_name)}</b>\n"
+                f"   🔑 Kalit so'z: {keyword}\n"
+                f"   📝 {html.escape(text_preview)}...\n"
+                f"   ⏰ {created}\n\n"
+            )
+
+        # Add action buttons
+        user_link = f"tg://user?id={target_id}"
+        response += (
+            f"🔗 <b>Actions:</b>\n"
+            f"• <a href=\"{user_link}\">Telegram orqali ochish</a> (agar ochilsa)\n"
+            f"• Bot orqali yozish: <code>/msg {target_id} salom</code>\n"
+        )
+
+        await send_bot_message(chat_id, response)
+
+    except Exception as e:
+        print(f"❌ User lookup xato: {e}")
+        await send_bot_message(chat_id, f"❌ Xatolik yuz berdi: {e}")
+
+
+async def handle_groups_command(chat_id: int, user_id: int):
+    """/groups komandasi - kuzatilayotgan guruhlarni ko'rsatish"""
+    # Majburiy obuna tekshiruvi
+    if user_id != ADMIN_ID:
+        is_subscribed = await check_user_subscription(user_id)
+        if not is_subscribed:
+            await send_subscription_request(chat_id)
+            return
+    
+    if user_id != ADMIN_ID:
+        await send_bot_message(chat_id, "⛔ Sizga ruxsat yo'q.")
+        return
+
+    if not supabase:
+        await send_bot_message(chat_id, "❌ Bazaga ulanish yo'q.")
+        return
+
+    try:
+        # Get all groups from database
+        result = await sb_execute(
+            lambda: supabase.table("account_groups")
+            .select("phone_number, group_id, group_name")
+            .execute()
+        )
+        
+        data = getattr(result, "data", None) or []
+        
+        if not data:
+            await send_bot_message(chat_id, "📭 Kuzatilayotgan guruhlar topilmadi.")
+            return
+
+        # Group by phone number
+        groups_by_phone = {}
+        for row in data:
+            phone = row.get("phone_number", "N/A")
+            group_name = row.get("group_name", "Noma'lum")
+            group_id = row.get("group_id", "N/A")
+            if phone not in groups_by_phone:
+                groups_by_phone[phone] = []
+            groups_by_phone[phone].append((group_name, group_id))
+
+        # Build response
+        response = "📋 <b>KUZATILAYOTGAN GURUHLAR</b>\n"
+        response += f"{'=' * 30}\n\n"
+        
+        for phone, groups in groups_by_phone.items():
+            response += f"📱 <code>{phone}</code> ({len(groups)} ta)\n"
+            for idx, (name, gid) in enumerate(groups[:10], 1):  # Show first 10
+                username_info = ""
+                if isinstance(gid, int):
+                    # Check if in blocked list
+                    if normalize_chat_id(gid) in BLOKED_GROUP_IDS_NORM:
+                        username_info = " 🚫 BLOK"
+                response += f"   {idx}. {html.escape(name[:30])}{username_info}\n"
+            if len(groups) > 10:
+                response += f"   ... va yana {len(groups) - 10} ta\n"
+            response += "\n"
+
+        response += f"💡 Jami: {len(data)} ta guruh/kanal\n"
+        response += f"💡 Tekshirish: https://t.me/DinurA380 kabi guruhlarni qidiring"
+
+        await send_bot_message(chat_id, response)
+
+    except Exception as e:
+        print(f"❌ Groups command xato: {e}")
+        await send_bot_message(chat_id, f"❌ Xatolik yuz berdi: {e}")
+
+
+async def bot_polling_loop():
+    """Bot komandalarini polling orqali qayta ishlash"""
+    global _bot_polling_offset, aiohttp_session
+    if not BOT_TOKEN:
+        print("⚠️ BOT_TOKEN yo'q, bot polling ishga tushmaydi")
+        return
+
+    print("🤖 Bot polling ishga tushdi...")
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+
+    while True:
+        try:
+            if not aiohttp_session:
+                await asyncio.sleep(5)
+                continue
+
+            params = {"offset": _bot_polling_offset, "limit": 10, "timeout": 30}
+            async with aiohttp_session.get(url, params=params, timeout=35) as resp:
+                if resp.status != 200:
+                    await asyncio.sleep(5)
+                    continue
+
+                data = await resp.json()
+                if not data.get("ok"):
+                    await asyncio.sleep(5)
+                    continue
+
+                updates = data.get("result", [])
+                for update in updates:
+                    update_id = update.get("update_id", 0)
+                    if update_id >= _bot_polling_offset:
+                        _bot_polling_offset = update_id + 1
+
+                    # Message tekshirish
+                    message = update.get("message")
+                    if message:
+                        text = message.get("text", "")
+                        chat_id = message.get("chat", {}).get("id", 0)
+                        user_id = message.get("from", {}).get("id", 0)
+                        username = message.get("from", {}).get("username", "")
+                        text_lower = text.strip().lower() if text else ""
+
+                        # Contact ulashish tekshirish
+                        if message.get("contact"):
+                            await handle_contact(message)
+                            continue
+
+                        if text_lower == "/start":
+                            await handle_start_command(chat_id, user_id, username)
+                        elif text_lower.startswith("/user"):
+                            await handle_user_lookup(chat_id, user_id, text)
+                        elif text_lower == "/groups":
+                            await handle_groups_command(chat_id, user_id)
+
+        except asyncio.TimeoutError:
+            pass
+        except Exception as e:
+            print(f"⚠️ Bot polling xato: {e}")
+            await asyncio.sleep(5)
 
 
 def session_base_for_phone(phone: str) -> str:
@@ -253,9 +783,9 @@ def extract_text_and_urls(message: Message) -> Tuple[str, List[str], str]:
                 escaped_chunk = html.escape(chunk)
                 
                 if ent.type == MessageEntityType.TEXT_LINK:
-                    built_text.append(f'<a href="{ent.url}">{escaped_chunk}</a>')
+                    built_text.append(f'<a href="{html.escape(ent.url, quote=True)}">{escaped_chunk}</a>')
                 elif ent.type == MessageEntityType.URL:
-                    built_text.append(f'<a href="{chunk}">{escaped_chunk}</a>')
+                    built_text.append(f'<a href="{html.escape(chunk, quote=True)}">{escaped_chunk}</a>')
                 elif ent.type == MessageEntityType.BOLD:
                     built_text.append(f'<b>{escaped_chunk}</b>')
                 elif ent.type == MessageEntityType.ITALIC:
@@ -323,48 +853,51 @@ def get_chat_link(message: Message) -> str:
     return get_message_link(message)
 
 
-def build_sender_anchor(message: Message) -> Tuple[str, Optional[str], str]:
+def build_sender_anchor(message: Message) -> Tuple[str, Optional[str], str, str]:
     """
     returns:
       sender_html: HTML text with link
       sender_url: URL for button (if valid)
       sender_plain: Plain text name
+      sender_info: Additional info (user ID for tracking anonymous users)
     """
     if message.from_user:
         u = message.from_user
         
-        # Use Pyrogram's mention for HTML (handles escaping and ID links automatically)
         name = f"@{u.username}" if u.username else (u.first_name or "User")
-        try:
-            sender_html = u.mention(name, style="html")
-        except:
-             # Fallback if u.mention fails
-             url = f"https://t.me/{u.username}" if u.username else f"tg://user?id={u.id}"
-             sender_html = f'<a href="{html.escape(url)}">{html.escape(name)}</a>'
+        # Always build HTML manually to ensure proper quoting
+        url = f"https://t.me/{u.username}" if u.username else f"tg://user?id={u.id}"
+        sender_html = f'<a href="{html.escape(url, quote=True)}">{html.escape(name)}</a>'
+        
+        # Add user ID info for tracking (especially for anonymous/hidden users)
+        user_id_str = str(u.id)
+        if u.username:
+            sender_info = f"@{u.username} | ID: <code>{user_id_str}</code>"
+        else:
+            sender_info = f"{name} | ID: <code>{user_id_str}</code> ⚠️ Username yo'q"
         
         sender_plain = name
-        sender_url = f"https://t.me/{u.username}" if u.username else f"tg://user?id={u.id}"
-        return sender_html, sender_url, sender_plain
+        sender_url = url
+        return sender_html, sender_url, sender_plain, sender_info
 
     if getattr(message, "sender_chat", None):
         sc = message.sender_chat
         title = sc.title or "Sender"
+        chat_id_str = str(sc.id)
         
         sender_plain = title
         if sc.username:
             url = f"https://t.me/{sc.username}"
-            try:
-                # sender_chat might not have mention method in older pyrogram? It usually does.
-                sender_html = f'<a href="{url}">{html.escape(title)}</a>'
-            except:
-                sender_html = f'<a href="{url}">{html.escape(title)}</a>'
-            return sender_html, url, sender_plain
+            sender_html = f'<a href="{html.escape(url, quote=True)}">{html.escape(title)}</a>'
+            sender_info = f"@{sc.username} | Chat ID: <code>{chat_id_str}</code>"
+            return sender_html, url, sender_plain, sender_info
         else:
             # Private group/channel sender
             sender_html = html.escape(title)
-            return sender_html, None, sender_plain
+            sender_info = f"{title} | Chat ID: <code>{chat_id_str}</code>"
+            return sender_html, None, sender_plain, sender_info
 
-    return "Noma'lum", None, "Noma'lum"
+    return "Noma'lum", None, "Noma'lum", "Noma'lum"
 
 
 async def sb_execute(fn, *args, **kwargs):
@@ -383,7 +916,8 @@ async def refresh_keywords():
         try:
             result = await sb_execute(lambda: supabase.table("keywords").select("keyword").execute())
             data = getattr(result, "data", None) or []
-            keywords_cache = [k["keyword"].lower() for k in data if k.get("keyword")]
+            # Normalizatsiya: Cyrillic -> Latin (ОДАМ -> odam)
+            keywords_cache = [normalize_text(k["keyword"].lower()) for k in data if k.get("keyword")]
             last_cache_update = time.time()
 
             if keywords_cache:
@@ -394,7 +928,7 @@ async def refresh_keywords():
             else:
                 keywords_regex = None
 
-            print(f"✅ Kalit so'zlar yangilandi: {len(keywords_cache)} ta")
+            print(f"✅ Kalit so'zlar yangilandi: {len(keywords_cache)} ta (normalized)")
         except Exception as e:
             print(f"❌ Kalit so'zlar yangilashda xato: {e}")
 
@@ -435,7 +969,7 @@ async def save_captured_message(
     keyword: str
 ) -> bool:
     """
-    captured_messages jadvaliga yozadi. cap_id ni o‘zimiz uuid qilib beramiz.
+    captured_messages jadvaliga yozadi. cap_id ni o'zimiz uuid qilib beramiz.
     """
     if not supabase:
         return False
@@ -514,6 +1048,7 @@ async def sync_all_groups(client: Client, phone: str) -> list:
         return []
     try:
         groups_found = []
+        channels_found = []
 
         try:
             async for dialog in client.get_dialogs():
@@ -521,7 +1056,14 @@ async def sync_all_groups(client: Client, phone: str) -> list:
                 if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                     groups_found.append({
                         "group_id": chat.id,
-                        "group_name": chat.title or f"Guruh {chat.id}"
+                        "group_name": chat.title or f"Guruh {chat.id}",
+                        "username": getattr(chat, "username", None)
+                    })
+                elif chat.type == ChatType.CHANNEL:
+                    channels_found.append({
+                        "group_id": chat.id,
+                        "group_name": chat.title or f"Kanal {chat.id}",
+                        "username": getattr(chat, "username", None)
                     })
         except FloodWait as fw:
             wait_s = int(getattr(fw, "value", 0) or 0)
@@ -531,12 +1073,26 @@ async def sync_all_groups(client: Client, phone: str) -> list:
                 if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                     groups_found.append({
                         "group_id": chat.id,
-                        "group_name": chat.title or f"Guruh {chat.id}"
+                        "group_name": chat.title or f"Guruh {chat.id}",
+                        "username": getattr(chat, "username", None)
+                    })
+                elif chat.type == ChatType.CHANNEL:
+                    channels_found.append({
+                        "group_id": chat.id,
+                        "group_name": chat.title or f"Kanal {chat.id}",
+                        "username": getattr(chat, "username", None)
                     })
 
-        await sync_account_groups(phone, groups_found)
+        # Debug: Ko'rinayotgan guruh va kanallar
+        all_found = groups_found + channels_found
+        usernames = [g.get("username") for g in all_found if g.get("username")]
+        print(f"🔍 [{phone}] Topildi: {len(groups_found)} guruh, {len(channels_found)} kanal")
+        if usernames:
+            print(f"   Usernames: {', '.join(usernames[:10])}{'...' if len(usernames) > 10 else ''}")
 
-        for g in groups_found:
+        await sync_account_groups(phone, all_found)
+
+        for g in all_found:
             if g["group_id"] in watched_groups_cache:
                 continue
             try:
@@ -597,22 +1153,20 @@ async def send_to_drivers_group(
     message_link: str,
     extra_urls: Optional[List[str]] = None,
     sender_url: Optional[str] = None,
-    portal_url: Optional[str] = None,
     session: Optional[aiohttp.ClientSession] = None
 ) -> bool:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
     keyboard = []
-    if sender_url:
+    # Bot API only supports http/https URLs for inline keyboard buttons
+    # tg://user?id=... scheme doesn't work in keyboard buttons
+    if sender_url and sender_url.startswith("https://"):
         keyboard.append([{"text": "👤 Клент личкаси", "url": sender_url}])
 
     keyboard.append([
         {"text": "👥 Guruhga o'tish", "url": group_link},
         {"text": "🔗 Xabarga o'tish", "url": message_link},
     ])
-
-    if portal_url:
-        keyboard.append([{"text": "📲 Portalda ko‘rish", "url": portal_url}])
 
     extra_urls = uniq_keep_order(extra_urls or [])[:3]
     for i, u in enumerate(extra_urls, 1):
@@ -649,6 +1203,10 @@ async def send_to_drivers_group(
 
                 body = await resp.text()
                 print(f"❌ Xabar yuborishda xato ({resp.status}): {body}")
+                # Debug: problematic text
+                if resp.status == 400 and "parse entities" in body:
+                    print(f"🔍 DEBUG: Matn uzunligi: {len(text)}")
+                    print(f"🔍 DEBUG: Matn (birinch 200 belgi): {text[:200]!r}")
                 return False
     except Exception as e:
         print(f"❌ Xabar yuborishda xato: {e}")
@@ -663,14 +1221,13 @@ async def send_worker(worker_id: int):
     while True:
         item = await send_queue.get()
         try:
-            cache_key, forward_text, group_link, message_link, urls, sender_url, portal_url = item
+            cache_key, forward_text, group_link, message_link, urls, sender_url = item
             ok = await send_to_drivers_group(
                 forward_text,
                 group_link=group_link,
                 message_link=message_link,
                 extra_urls=urls,
                 sender_url=sender_url,
-                portal_url=portal_url,
                 session=aiohttp_session
             )
             if not ok:
@@ -742,46 +1299,101 @@ async def update_account_status(phone: str, status: str):
 def create_message_handler(phone: str):
     async def handle_message(client: Client, message: Message):
         global last_cache_update, keywords_regex
+        
+        try:
+            chat_id = message.chat.id
+            group_name = getattr(message.chat, "title", None) or f"Chat {chat_id}"
+            chat_type = getattr(message.chat, "type", None)
+            chat_username = getattr(message.chat, "username", None)
+            
+            # Debug: BARCHA xabarlarni log qilish (keyword matchingdan avval)
+            try:
+                msg_text = message.text or ""
+                msg_preview = msg_text[:50] if len(msg_text) > 50 else msg_text
+            except Exception:
+                msg_preview = "[Unicode error]"
+            if DEBUG:
+                if not chat_username:
+                    print(f"🔒 [{phone}] Xabar keldi (yopiq): {group_name} | ID: {chat_id} | Matn: {msg_preview}...")
+                else:
+                    print(f"📨 [{phone}] Xabar keldi: @{chat_username} | Matn: {msg_preview}...")
+            
+            if normalize_chat_id(chat_id) in BLOKED_GROUP_IDS_NORM:
+                if DEBUG:
+                    print(f"🚫 [{phone}] Bloklangan guruh: {chat_id}")
+                return
 
-        chat_id = message.chat.id
-        if normalize_chat_id(chat_id) in BLOKED_GROUP_IDS_NORM:
+            now = time.time()
+            if now - last_cache_update > CACHE_TTL:
+                await refresh_keywords()
+
+            cleaned_text, urls, raw_text = extract_text_and_urls(message)
+        except Exception as e:
+            print(f"❌ [{phone}] Xabar qayta ishlashda xato: {e}")
+            import traceback
+            traceback.print_exc()
             return
 
-        group_name = getattr(message.chat, "title", None) or f"Chat {chat_id}"
-
-        now = time.time()
-        if now - last_cache_update > CACHE_TTL:
-            await refresh_keywords()
-
-        cleaned_text, urls, raw_text = extract_text_and_urls(message)
-
         if not keywords_regex:
+            print(f"⚠️ [{phone}] keywords_regex yo'q - kalit so'zlar yuklanmagan!")
             return
 
         blob = (raw_text or cleaned_text or "")
         if not blob:
+            if DEBUG and chat_id == -1002113606537:
+                print(f"🔍 [DIAGNOSTIC] Хоразм: matn bo'sh!")
             return
 
+        if DEBUG and len(blob) > 0:
+            print(f"📝 [{phone}] Xabar tekshirilmoqda: {group_name} | Matn uzunligi: {len(blob)}")
+
+        normalized_blob = normalize_text(blob)
+        
         m = keywords_regex.search(blob)
         if not m:
+            m = keywords_regex.search(normalized_blob)
+        
+        if not m:
+            if DEBUG and not chat_username:
+                print(f"❌ [{phone}] Kalit so'z topilmadi (yopiq guruh): {group_name}")
+                print(f"   Asl matn: {blob[:80]}...")
+                print(f"   Normalized: {normalized_blob[:80]}...")
+                print(f"   Kalit so'zlar: {keywords_cache[:10]}...")
             return
         matched_keyword = m.group(0).lower()
+        if DEBUG:
+            print(f"🎯 [{phone}] Kalit so'z topildi: '{matched_keyword}' | Guruh: {group_name}")
 
-        # Deduplicate: prevent same message being forwarded by multiple accounts
         cache_key = (normalize_chat_id(chat_id), int(message.id))
         now = time.time()
+        
+        if DEBUG and chat_id == -1002113606537:
+            print(f"🔍 [DIAGNOSTIC] Хоразм гурухи: cache_key={cache_key}, seen={cache_key in _seen_messages}")
+        
         if cache_key in _seen_messages and now - _seen_messages[cache_key] < 60:
+            if DEBUG:
+                print(f"⏭️ [{phone}] Xabar allaqachon qayta ishlangan: {chat_id}/{message.id}")
             return
         _seen_messages[cache_key] = now
+        if DEBUG:
+            print(f"✅ [{phone}] Yangi xabar topildi: {chat_id}/{message.id}, kalit so'z: {matched_keyword}")
 
         # Cleanup old entries periodically
         if len(_seen_messages) > 5000:
-            cutoff = now - 120
+            cutoff = now - 600  # 10 daqiqa
             to_del = [k for k, v in _seen_messages.items() if v < cutoff]
             for k in to_del:
                 del _seen_messages[k]
 
-        sender_html, sender_url, sender_plain = build_sender_anchor(message)
+        sender_html, sender_url, sender_plain, sender_info = build_sender_anchor(message)
+        
+        # Get user_id from message
+        user_id = "N/A"
+        if message.from_user:
+            user_id = str(message.from_user.id)
+        elif getattr(message, "sender_chat", None):
+            user_id = str(message.sender_chat.id)
+        
         message_link = get_message_link(message)
         group_link = get_chat_link(message)
 
@@ -794,20 +1406,31 @@ def create_message_handler(phone: str):
             show = urls[:3]
             extra_links_text = "\n\n" + "\n".join([f"🔗 {html.escape(u)}" for u in show])
 
+        # Group ID for tracking private groups
+        group_id_info = f"<code>{chat_id}</code>"
+
+        # Build user action commands
+        user_commands = f"💬 <code>/user {user_id}</code> - Malumot olish"
+        if sender_url and sender_url.startswith("https://t.me/"):
+            user_commands += f"\n👤 <a href=\"{html.escape(sender_url, quote=True)}\">Lichkaga o'tish</a>"
+        else:
+            # Username bo'lmagan foydalanuvchilar uchun user_id orqali lichkaga havola
+            user_commands += f"\n👤 <a href=\"tg://user?id={user_id}\">Lichkaga o'tish</a>"
+
         forward_text = (
             f"🔔 <b>Yangi buyurtma</b>\n"
-            f"📍 Guruh: <b>{html.escape(group_name)}</b>\n"
-            f"👤 Kimdan: {sender_html}\n\n"
+            f"📍 Guruh: <b>{html.escape(group_name)}</b> (ID: {group_id_info})\n"
+            f"👤 Kimdan: {sender_html}\n"
+            f"🆔 ID: <code>{user_id}</code>\n"
+            f"ℹ️ {sender_info}\n\n"
+            f"📋 <b>User buyruqlari:</b>\n{user_commands}\n\n"
             f"{safe_text}"
             f"{extra_links_text}\n\n"
-            f"🔗 {message_link}"
+            f"🔗 <a href=\"{html.escape(message_link, quote=True)}\">Xabar havolasi</a>"
         )
 
-        cap_id = str(uuid.uuid4())
-        portal_url = f"{PORTAL_BASE_URL}/m/{cap_id}" if PORTAL_BASE_URL else ""
-
         asyncio.create_task(save_captured_message(
-            cap_id=cap_id,
+            cap_id=str(uuid.uuid4()),
             phone=phone,
             group_id=chat_id,
             group_name=group_name,
@@ -822,13 +1445,32 @@ def create_message_handler(phone: str):
 
         asyncio.create_task(save_keyword_hit(matched_keyword, chat_id, group_name, phone, cleaned_text))
 
-        item = ((normalize_chat_id(chat_id), int(message.id)), forward_text, group_link, message_link, urls, sender_url, portal_url)
+        item = ((normalize_chat_id(chat_id), int(message.id)), forward_text, group_link, message_link, urls, sender_url)
 
+        # Xabar navbatga qo'shilishini log qilish
+        print(f"📤 [{phone}] Xabar navbatga qo'shildi: {chat_id}/{message.id}")
+
+        # Agar xabar shaxsiy chatdan kelsa, mijozga avtomatik javob yuborish
+        if chat_type == "private" and message.from_user:
+            try:
+                reply_text = (
+                    f"✅ Sizning xabaringiz qabul qilindi!\n"
+                    f"📍 Operatorlar tez orada siz bilan bog'lanadi."
+                )
+                await client.send_message(
+                    chat_id=chat_id,
+                    text=reply_text
+                )
+                print(f"💬 [{phone}] Mijozga javob yuborildi: {chat_id}")
+            except Exception as e:
+                print(f"⚠️ [{phone}] Mijozga javob yuborishda xato: {e}")
+        
         while True:
             try:
                 send_queue.put_nowait(item)
                 break
             except asyncio.QueueFull:
+                print(f"⚠️ [{phone}] Navbat to'liq, kutish...")
                 await asyncio.sleep(0.05)
 
     return handle_message
@@ -866,8 +1508,8 @@ async def run_client(phone: str):
                     if client and client.is_connected:
                         await sync_all_groups(client, phone)
                         print_statistics()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"⚠️ [{phone}] Periodik sync xato: {e}")
 
         asyncio.create_task(periodic_sync())
         await asyncio.Event().wait()
@@ -931,11 +1573,13 @@ async def main():
     print(f"📤 Yuborish workerlari: {max(1, SEND_WORKERS)} ta | queue={QUEUE_MAX}")
 
     await load_groups_cache()
+    await load_approved_users()
     await ensure_accounts_seeded_from_env()
 
-    phones = await fetch_phone_numbers_from_db()
+    # Avval .env dan o'chiramiz, agar bo'sh bo'lsa bazadan
+    phones = PHONE_NUMBERS_ENV_FALLBACK
     if not phones:
-        phones = PHONE_NUMBERS_ENV_FALLBACK
+        phones = await fetch_phone_numbers_from_db()
 
     phones = uniq_keep_order(phones)
     ALL_PHONES = phones
@@ -947,6 +1591,9 @@ async def main():
 
     await refresh_keywords()
     asyncio.create_task(periodic_keywords_refresh())
+
+    # Bot polling ni ishga tushirish (background task)
+    asyncio.create_task(bot_polling_loop())
 
     async def start_phone(p: str):
         if p in running_clients:
