@@ -8,6 +8,12 @@ from telethon import TelegramClient, events
 from telethon.tl.types import User, Channel
 from telethon.network import ConnectionTcpIntermediate
 
+# Force standard streams to use UTF-8 to prevent encoding errors on Windows
+if sys.platform.startswith('win'):
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
+
 # Telethon kutubxonasining batafsil va chalkash tarmoq loglarini o'chirib qo'yamiz (faqat jiddiy xatolarni ko'rsatadi)
 logging.getLogger('telethon').setLevel(logging.ERROR)
 
