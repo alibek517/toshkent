@@ -275,7 +275,7 @@ async def send_to_target_group(message_text, reply_markup=None):
     if bot_client and bot_client.is_connected():
         try:
             # Avval tugmalari (markup) bilan birga yuboramiz
-            await bot_client.send_message(chat_id, message_text, reply_markup=reply_markup, link_preview=False)
+            await bot_client.send_message(chat_id, message_text, buttons=reply_markup, link_preview=False)
             print("🚀 [YUBORILDI] Xabar Telegram Bot orqali (tugmalari bilan) drivers guruhiga jo'natildi.")
             return True
         except Exception as e:
@@ -294,7 +294,7 @@ async def send_to_target_group(message_text, reply_markup=None):
     for i, client in enumerate(clients):
         if client.is_connected():
             try:
-                await client.send_message(chat_id, message_text, reply_markup=reply_markup, link_preview=False)
+                await client.send_message(chat_id, message_text, buttons=reply_markup, link_preview=False)
                 print(f"🚀 [YUBORILDI] Xabar Akkaunt #{i+1} ({PHONE_NUMBERS[i]}) orqali (tugmalari bilan) jo'natildi.")
                 return True
             except Exception as e:
