@@ -159,6 +159,7 @@ PHONE_NUMBERS_raw = os.getenv("PHONE_NUMBERS", os.getenv("PHONE_NUMBER", ""))
 TARGET_GROUP_raw = os.getenv("TARGET_GROUP", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 KEYWORDS_raw = os.getenv("KEYWORDS", "odam bor,moshina kerak,pochta bor,tayyor odam,kler,yuk bor,transport kerak,taxi bormikan,taxi kerak")
+BLOCK_WORDS_raw = os.getenv("BLOCK_WORDS", "")
 
 if not API_ID or not API_HASH or not PHONE_NUMBERS_raw:
     print("❌ XATOLIK: API_ID, API_HASH yoki PHONE_NUMBERS .env faylida ko'rsatilmagan!")
@@ -168,9 +169,12 @@ if not API_ID or not API_HASH or not PHONE_NUMBERS_raw:
 PHONE_NUMBERS = [p.strip() for p in PHONE_NUMBERS_raw.split(",") if p.strip()]
 # Kalit so'zlarni tozalab ro'yxatga olish (katta-kichik harflarsiz moslash uchun)
 KEYWORDS = [kw.strip().lower() for kw in KEYWORDS_raw.split(",") if kw.strip()]
+# Bloklangan so'zlarni ro'yxatga olish
+BLOCK_WORDS = [bw.strip().lower() for bw in BLOCK_WORDS_raw.split(",") if bw.strip()]
 
 print(f"ℹ️ [SOZLAMALAR] Yuklangan telefonlar: {PHONE_NUMBERS}")
 print(f"ℹ️ [SOZLAMALAR] Qidiriladigan so'zlar: {KEYWORDS}")
+print(f"ℹ️ [SOZLAMALAR] Bloklangan so'zlar: {BLOCK_WORDS}")
 print(f"ℹ️ [SOZLAMALAR] Nishon guruh ID/Username: {TARGET_GROUP_raw}")
 
 # Faol mijozlar ro'yxati
@@ -341,6 +345,11 @@ async def process_message(event):
 
     message_text_lower = message_text.lower()
     
+    # Bloklangan so'zlarni tekshirish (agar birortasi topilsa, xabarni tashlab yuboramiz)
+    for bw in BLOCK_WORDS:
+        if bw in message_text_lower:
+            return
+
     # Kalit so'z qidirish
     matched_keyword = None
     for kw in KEYWORDS:
