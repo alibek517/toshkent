@@ -322,19 +322,6 @@ async def process_message(event):
     if not message_text:
         return
 
-    # Guruh ma'lumotlarini olish (tezkorlik uchun keshlangan entity'dan foydalanadi)
-    chat_title = "Guruh"
-    try:
-        chat = event.chat or await event.get_chat()
-        if chat:
-            chat_title = getattr(chat, 'title', 'Guruh')
-    except Exception:
-        pass
-
-    # Kelgan xabarni konsolda ko'rsatamiz
-    clean_text = message_text.replace('\n', ' ')[:30]
-    print(f"📩 [XABAR KELDI] Guruh: '{chat_title}' | Matn: '{clean_text}...'")
-
     # Kelgan xabar maqsadli guruhdan bo'lsa, cheksiz sikl bo'lmasligi uchun qayta ishlamaymiz
     if event.chat_id in target_group_ids:
         return
@@ -357,87 +344,94 @@ async def process_message(event):
             matched_keyword = kw
             break
 
-    if matched_keyword:
-        # Xatolikka chidamli ma'lumot yig'ish (tarmoq kechikishini kamaytirish uchun event'dagi tayyor ma'lumotdan foydalanamiz)
-        sender_name = "Noma'lum"
-        username_str = ""
-        user_mention = "Mavjud emas"
-        phone_str = ""
-        chat_link = "Mavjud emas"
-        msg_link = "Mavjud emas"
-        
-        try:
-            sender = event.sender or await event.get_sender()
-            if sender:
-                if isinstance(sender, User):
-                    first_name = sender.first_name or ""
-                    last_name = sender.last_name or ""
-                    sender_name = f"{first_name} {last_name}".strip() or "Ismsiz"
-                    
-                    if sender.username:
-                        username_str = f"@{sender.username}"
-                        user_mention = f"[{sender_name}](tg://user?id={sender.id}) ({username_str})"
-                    else:
-                        user_mention = f"[{sender_name}](tg://user?id={sender.id}) (Username yo'q)"
-                        
-                    if sender.phone:
-                        phone_str = f"+{sender.phone}"
-                
-                elif isinstance(sender, Channel):
-                    sender_name = sender.title or "Kanal/Guruh"
-                    if sender.username:
-                        username_str = f"@{sender.username}"
-                        user_mention = f"[{sender_name}](https://t.me/{sender.username})"
-                    else:
-                        user_mention = f"{sender_name}"
-        except Exception:
-            pass
+    # Agar kalit so'z topilmasa, bu yerda to'xtatamiz (tarmoq chaqiruvlari va printlarni chetlab o'tamiz)
+    if not matched_keyword:
+        return
 
-        try:
-            chat = event.chat or await event.get_chat()
-            if chat:
-                peer_str = str(event.chat_id)
-                if peer_str.startswith("-100"):
-                    peer_str = peer_str[4:]
-                
-                if getattr(chat, 'username', None):
-                    chat_link = f"https://t.me/{chat.username}"
-                    msg_link = f"https://t.me/{chat.username}/{event.message.id}"
-                else:
-                    chat_link = f"https://t.me/c/{peer_str}/999999999"
-                    msg_link = f"https://t.me/c/{peer_str}/{event.message.id}"
-        except Exception:
-            pass
-
-        print(f"🎯 [MOS KELDI] '{matched_keyword}' -> Guruh: '{chat_title}' | Yuboruvchi: {sender_name}")
-
-        # Xabarni chiroyli formatlash
-        report_msg = (
-            f"🚕 **YANGI BUYURTMA TOPILDI!**\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🔑 **Mos kelgan so'z:** #{matched_keyword.replace(' ', '_')}\n"
-            f"👥 **Guruh:** [{chat_title}]({chat_link})\n"
-            f"👤 **Yuboruvchi:** {user_mention}\n"
-        )
-        
-        if phone_str:
-            report_msg += f"📞 **Telefon raqami:** {phone_str}\n"
+    # Xatolikka chidamli guruh ma'lumotlarini yig'ish (faqat kalit so'z mos kelganda tarmoq orqali olinadi)
+    chat_title = "Guruh"
+    chat_link = "Mavjud emas"
+    msg_link = "Mavjud emas"
+    
+    try:
+        chat = event.chat or await event.get_chat()
+        if chat:
+            chat_title = getattr(chat, 'title', 'Guruh')
+            peer_str = str(event.chat_id)
+            if peer_str.startswith("-100"):
+                peer_str = peer_str[4:]
             
-        report_msg += (
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"📝 **Xabar matni:**\n"
-            f"\"{message_text}\"\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🔗 **Original xabarni ko'rish:** [O'tish]({msg_link})"
-        )
+            if getattr(chat, 'username', None):
+                chat_link = f"https://t.me/{chat.username}"
+                msg_link = f"https://t.me/{chat.username}/{event.message.id}"
+            else:
+                chat_link = f"https://t.me/c/{peer_str}/999999999"
+                msg_link = f"https://t.me/c/{peer_str}/{event.message.id}"
+    except Exception:
+        pass
 
-        # Tugmalarni (reply_markup) olish va uzatish
-        reply_markup = getattr(event.message, 'reply_markup', None)
+    # Yuboruvchi ma'lumotlarini yig'ish
+    sender_name = "Noma'lum"
+    username_str = ""
+    user_mention = "Mavjud emas"
+    phone_str = ""
+    
+    try:
+        sender = event.sender or await event.get_sender()
+        if sender:
+            if isinstance(sender, User):
+                first_name = sender.first_name or ""
+                last_name = sender.last_name or ""
+                sender_name = f"{first_name} {last_name}".strip() or "Ismsiz"
+                
+                if sender.username:
+                    username_str = f"@{sender.username}"
+                    user_mention = f"[{sender_name}](tg://user?id={sender.id}) ({username_str})"
+                else:
+                    user_mention = f"[{sender_name}](tg://user?id={sender.id}) (Username yo'q)"
+                    
+                if sender.phone:
+                    phone_str = f"+{sender.phone}"
+            
+            elif isinstance(sender, Channel):
+                sender_name = sender.title or "Kanal/Guruh"
+                if sender.username:
+                    username_str = f"@{sender.username}"
+                    user_mention = f"[{sender_name}](https://t.me/{sender.username})"
+                else:
+                    user_mention = f"{sender_name}"
+    except Exception:
+        pass
 
-        try:
-            await send_to_target_group(report_msg, reply_markup=reply_markup)
-        except Exception as ex:
-            print(f"❌ [YUBORISHDA XATO] {ex}")
+    print(f"🎯 [MOS KELDI] '{matched_keyword}' -> Guruh: '{chat_title}' | Yuboruvchi: {sender_name}")
+
+    # Xabarni chiroyli formatlash
+    report_msg = (
+        f"🚕 **YANGI BUYURTMA TOPILDI!**\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🔑 **Mos kelgan so'z:** #{matched_keyword.replace(' ', '_')}\n"
+        f"👥 **Guruh:** [{chat_title}]({chat_link})\n"
+        f"👤 **Yuboruvchi:** {user_mention}\n"
+    )
+    
+    if phone_str:
+        report_msg += f"📞 **Telefon raqami:** {phone_str}\n"
+        
+    report_msg += (
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📝 **Xabar matni:**\n"
+        f"\"{message_text}\"\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🔗 **Original xabarni ko'rish:** [O'tish]({msg_link})"
+    )
+
+    # Tugmalarni (reply_markup) olish va uzatish
+    reply_markup = getattr(event.message, 'reply_markup', None)
+
+    try:
+        await send_to_target_group(report_msg, reply_markup=reply_markup)
+    except Exception as ex:
+        print(f"❌ [YUBORISHDA XATO] {ex}")
 
 async def message_handler(event):
     # Shaxsiy xabarlarni (lichkalarni) o'qimaymiz, faqat guruhlar va kanallar
@@ -466,7 +460,7 @@ async def main():
             connection_retries=None,               # Cheksiz qayta ulanish urinishi
             retry_delay=5,                          # Qayta ulanish oralig'i (soniya)
             auto_reconnect=True,
-            flood_sleep_threshold=60                # Telegram cheklovi bo'lsa avtomat 60 soniya kutish
+            flood_sleep_threshold=24 * 3600         # Telegram cheklovi bo'lsa avtomat kutish
         )
         try:
             await bot_client.start(bot_token=BOT_TOKEN)
@@ -489,7 +483,7 @@ async def main():
             connection_retries=None,               # Cheksiz qayta ulanish
             retry_delay=5,                          # Tarmoq o'chib yonsa har 5 soniyada ulanishga urinadi
             auto_reconnect=True,
-            flood_sleep_threshold=60
+            flood_sleep_threshold=24 * 3600
         )
         
         try:
