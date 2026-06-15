@@ -455,9 +455,75 @@ async def process_message(event):
     except Exception as ex:
         print(f"❌ [YUBORISHDA XATO] {ex}")
 
+async def process_bot_private_message(event):
+    """Foydalanuvchi botga shaxsiy xabar yuborganda buyurtma olish"""
+    message_text = event.message.text
+    if not message_text:
+        return
+
+    # Agar foydalanuvchi /start yozgan bo'lsa, xush kelibsiz xabarini yuboramiz
+    if message_text.strip().lower() == "/start":
+        welcome_msg = (
+            "🚕 **Assalomu alaykum! Toshkent-Xorazm taksi buyurtma botiga xush kelibsiz!**\n\n"
+            "Taksiga buyurtma berish yoki pochta yuborish uchun buyurtma matnini shu yerga yozib yuboring.\n\n"
+            "**Masalan:**\n"
+            "`Toshkentdan Urganchga 2 odam bor, tel: +998901234567`"
+        )
+        await event.respond(welcome_msg)
+        return
+
+    # Aks holda, bu taksi buyurtmasi deb hisoblanadi va drivers guruhiga yuboriladi
+    sender = await event.get_sender()
+    sender_name = "Noma'lum"
+    user_mention = "Mavjud emas"
+    
+    if sender:
+        first_name = getattr(sender, 'first_name', '') or ''
+        last_name = getattr(sender, 'last_name', '') or ''
+        sender_name = f"{first_name} {last_name}".strip() or "Ismsiz"
+        
+        if getattr(sender, 'username', None):
+            user_mention = f"[{sender_name}](tg://user?id={sender.id}) (@{sender.username})"
+        else:
+            user_mention = f"[{sender_name}](tg://user?id={sender.id}) (Username yo'q)"
+
+    report_msg = (
+        f"🚕 **BOT ORQALI YANGI BUYURTMA!**\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 **Buyurtmachi:** {user_mention}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📝 **Buyurtma matni:**\n"
+        f"\"{message_text}\"\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+    )
+
+    # Guruhga yuboramiz
+    sent = await send_to_target_group(report_msg)
+    
+    if sent:
+        reply_msg = (
+            "✅ **Sizning buyurtmangiz haydovchilar guruhiga muvaffaqiyatli yuborildi!**\n\n"
+            "Tez orada haydovchilar siz bilan bog'lanishadi."
+        )
+    else:
+        reply_msg = (
+            "❌ **Xatolik yuz berdi.** Buyurtmangizni yuborib bo'lmadi.\n"
+            "Iltimos, keyinroq qayta urinib ko'ring."
+        )
+        
+    await event.respond(reply_msg)
+
 async def message_handler(event):
-    # Shaxsiy xabarlarni (lichkalarni) o'qimaymiz, faqat guruhlar va kanallar
+    # Agar xabar shaxsiy chatdan (lichkadan) kelgan bo'lsa
     if event.is_private:
+        # Faqat botga kelgan shaxsiy xabarlarni qayta ishlaymiz (userbot lichkalarini o'qimaymiz)
+        if bot_client and event.client == bot_client:
+            asyncio.create_task(process_bot_private_message(event))
+        return
+
+    # Guruhlar va kanallardagi xabarlarni qayta ishlash
+    if bot_client and event.client == bot_client:
+        # Bot guruhlarda xabarlarni o'qib kalit so'z qidirmaydi (buni userbotlar bajaradi)
         return
         
     # Xabarni qayta ishlashni orqa fonda ishga tushiramiz (background task)
@@ -486,6 +552,7 @@ async def main():
         )
         try:
             await bot_client.start(bot_token=BOT_TOKEN)
+            bot_client.add_event_handler(message_handler, events.NewMessage)
             print("🤖 [BOT] Telegram Bot muvaffaqiyatli ishga tushdi va ulandi!")
         except Exception as e:
             print(f"❌ [BOT XATO] Bot Token orqali ulanishda xato: {e}")
