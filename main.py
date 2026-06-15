@@ -543,14 +543,14 @@ async def send_to_target_group(message_text, reply_markup=None):
     if bot_client and bot_client.is_connected():
         try:
             # Avval tugmalari (markup) bilan birga yuboramiz
-            await bot_client.send_message(to_entity, message_text, buttons=reply_markup, link_preview=False)
+            await bot_client.send_message(to_entity, message_text, buttons=reply_markup, link_preview=False, parse_mode='html')
             print("🚀 [YUBORILDI] Xabar Telegram Bot orqali (tugmalari bilan) drivers guruhiga jo'natildi.")
             return True
         except Exception as e:
             if reply_markup:
                 # Tugmalar bilan yuborish xato bersa (masalan callback tugma taqiqlangan bo'lsa), faqat matnni o'zini yuboramiz
                 try:
-                    await bot_client.send_message(to_entity, message_text, link_preview=False)
+                    await bot_client.send_message(to_entity, message_text, link_preview=False, parse_mode='html')
                     print(f"🚀 [YUBORILDI] Xabar Telegram Bot orqali (faqat matn, tugmalarsiz) jo'natildi. Tugma xatosi: {e}")
                     return True
                 except Exception as e2:
@@ -562,13 +562,13 @@ async def send_to_target_group(message_text, reply_markup=None):
     for i, client in enumerate(clients):
         if client.is_connected():
             try:
-                await client.send_message(to_entity, message_text, buttons=reply_markup, link_preview=False)
+                await client.send_message(to_entity, message_text, buttons=reply_markup, link_preview=False, parse_mode='html')
                 print(f"🚀 [YUBORILDI] Xabar Akkaunt #{i+1} ({PHONE_NUMBERS[i]}) orqali (tugmalari bilan) jo'natildi.")
                 return True
             except Exception as e:
                 if reply_markup:
                     try:
-                        await client.send_message(to_entity, message_text, link_preview=False)
+                        await client.send_message(to_entity, message_text, link_preview=False, parse_mode='html')
                         print(f"🚀 [YUBORILDI] Xabar Akkaunt #{i+1} ({PHONE_NUMBERS[i]}) orqali (faqat matn, tugmalarsiz) jo'natildi. Tugma xatosi: {e}")
                         return True
                     except Exception as e2:
@@ -666,9 +666,9 @@ async def process_message(event):
                 
                 if sender.username:
                     username_str = f"@{sender.username}"
-                    user_mention = f"[{sender_name}](tg://user?id={sender.id}) ({username_str})"
+                    user_mention = f'<a href="https://t.me/{sender.username}">{sender_name}</a> ({username_str})'
                 else:
-                    user_mention = f"[{sender_name}](tg://user?id={sender.id}) (Username yo'q)"
+                    user_mention = f'<a href="tg://user?id={sender.id}">{sender_name}</a> (Username yo\'q)'
                     
                 if sender.phone:
                     phone_str = f"+{sender.phone}"
@@ -677,7 +677,7 @@ async def process_message(event):
                 sender_name = sender.title or "Kanal/Guruh"
                 if sender.username:
                     username_str = f"@{sender.username}"
-                    user_mention = f"[{sender_name}](https://t.me/{sender.username})"
+                    user_mention = f'<a href="https://t.me/{sender.username}">{sender_name}</a>'
                 else:
                     user_mention = f"{sender_name}"
     except Exception:
@@ -694,32 +694,36 @@ async def process_message(event):
 
     # Xabarni chiroyli formatlash
     report_msg = (
-        f"🚕 **YANGI BUYURTMA TOPILDI!**\n"
+        f"🚕 <b>YANGI BUYURTMA TOPILDI!</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🔑 **Mos kelgan so'z:** #{matched_keyword.replace(' ', '_')}\n"
-        f"👥 **Guruh:** [{chat_title}]({chat_link})\n"
-        f"👤 **Yuboruvchi:** {user_mention}\n"
+        f"🔑 <b>Mos kelgan so'z:</b> #{matched_keyword.replace(' ', '_')}\n"
+        f"👥 <b>Guruh:</b> <a href=\"{chat_link}\">{chat_title}</a>\n"
+        f"👤 <b>Yuboruvchi:</b> {user_mention}\n"
     )
     
     if final_phone:
-        report_msg += f"📞 **Telefon raqami:** {final_phone}\n"
+        report_msg += f"📞 <b>Telefon raqami:</b> {final_phone}\n"
         
     report_msg += (
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"📝 **Xabar matni:**\n"
+        f"📝 <b>Xabar matni:</b>\n"
         f"\"{message_text}\"\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🔗 **Original xabarni ko'rish:** [O'tish]({msg_link})"
+        f"🔗 <b>Original xabarni ko'rish:</b> <a href=\"{msg_link}\">O'tish</a>"
     )
 
-    # Lichkaga o'tish inline tugmasi (2-funksiya)
+    # Lichkaga o'tish va Original xabar inline tugmalari
     inline_buttons = []
-    if sender_id:
-        if username_str:
-            clean_user = username_str.replace("@", "")
-            inline_buttons.append(Button.url("💬 Lichkaga yozish", f"https://t.me/{clean_user}"))
-        else:
-            inline_buttons.append(Button.url("💬 Lichkaga yozish", f"tg://user?id={sender_id}"))
+    if username_str:
+        clean_user = username_str.replace("@", "")
+        inline_buttons.append(Button.url("💬 Lichkaga yozish", f"https://t.me/{clean_user}"))
+    elif final_phone:
+        phone_digits = re.sub(r'\D', '', final_phone)
+        if len(phone_digits) >= 9:
+            inline_buttons.append(Button.url("💬 Lichkaga yozish", f"https://t.me/+{phone_digits}"))
+            
+    if msg_link and msg_link != "Mavjud emas":
+        inline_buttons.append(Button.url("🔗 Original xabar", msg_link))
 
     # Guruhga yuboramiz
     try:
@@ -733,7 +737,7 @@ async def process_message(event):
             driver_ids = get_drivers_for_route(from_city, to_city)
             if driver_ids:
                 alert_msg = (
-                    f"🔔 **SIZ KUZATAYOTGAN YO'NALISHDA BUYURTMA!**\n"
+                    f"🔔 <b>SIZ KUZATAYOTGAN YO'NALISHDA BUYURTMA!</b>\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
                     f"📍 Yo'nalish: #{from_city.upper()} ➡️ #{to_city.upper()}\n"
                     f"👤 Buyurtmachi: {user_mention}\n"
@@ -742,7 +746,7 @@ async def process_message(event):
                 )
                 for d_id in driver_ids:
                     try:
-                        await bot_client.send_message(d_id, alert_msg, buttons=[inline_buttons] if inline_buttons else None)
+                        await bot_client.send_message(d_id, alert_msg, buttons=[inline_buttons] if inline_buttons else None, parse_mode='html')
                         print(f"🔔 [PUSH] Haydovchi {d_id} ga bildirishnoma yuborildi.")
                     except Exception as alert_ex:
                         pass
@@ -833,28 +837,34 @@ async def process_bot_private_message(event):
         
         if getattr(sender, 'username', None):
             username_str = f"@{sender.username}"
-            user_mention = f"[{sender_name}](tg://user?id={sender.id}) ({username_str})"
+            user_mention = f'<a href="https://t.me/{sender.username}">{sender_name}</a> ({username_str})'
         else:
-            user_mention = f"[{sender_name}](tg://user?id={sender.id}) (Username yo'q)"
+            user_mention = f'<a href="tg://user?id={sender.id}">{sender_name}</a> (Username yo\'q)'
 
     report_msg = (
-        f"🚕 **BOT ORQALI YANGI BUYURTMA!**\n"
+        f"🚕 <b>BOT ORQALI YANGI BUYURTMA!</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"👤 **Buyurtmachi:** {user_mention}\n"
+        f"👤 <b>Buyurtmachi:</b> {user_mention}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"📝 **Buyurtma matni:**\n"
+        f"📝 <b>Buyurtma matni:</b>\n"
         f"\"{message_text}\"\n"
         f"━━━━━━━━━━━━━━━━━━\n"
     )
 
+    # Buyurtmani bazada saqlash va push alertlar yuborish
+    from_city, to_city = parse_route(message_text)
+    phone_extracted = extract_phone(message_text)
+    store_order(0, 0, message_text, from_city, to_city, phone_extracted, sender_id, username_str)
+
     # Lichkaga o'tish tugmasi
     inline_buttons = []
-    if sender_id:
-        if username_str:
-            clean_user = username_str.replace("@", "")
-            inline_buttons.append(Button.url("💬 Lichkaga yozish", f"https://t.me/{clean_user}"))
-        else:
-            inline_buttons.append(Button.url("💬 Lichkaga yozish", f"tg://user?id={sender_id}"))
+    if username_str:
+        clean_user = username_str.replace("@", "")
+        inline_buttons.append(Button.url("💬 Lichkaga yozish", f"https://t.me/{clean_user}"))
+    elif phone_extracted:
+        phone_digits = re.sub(r'\D', '', phone_extracted)
+        if len(phone_digits) >= 9:
+            inline_buttons.append(Button.url("💬 Lichkaga yozish", f"https://t.me/+{phone_digits}"))
 
     # Guruhga yuboramiz
     sent = await send_to_target_group(report_msg, reply_markup=[inline_buttons] if inline_buttons else None)
@@ -872,17 +882,12 @@ async def process_bot_private_message(event):
         
     await event.respond(reply_msg, buttons=keyboard)
 
-    # Buyurtmani bazada saqlash va push alertlar yuborish
-    from_city, to_city = parse_route(message_text)
-    phone_extracted = extract_phone(message_text)
-    store_order(0, 0, message_text, from_city, to_city, phone_extracted, sender_id, username_str)
-
     if from_city and to_city and bot_client:
         try:
             driver_ids = get_drivers_for_route(from_city, to_city)
             if driver_ids:
                 alert_msg = (
-                    f"🔔 **SIZ KUZATAYOTGAN YO'NALISHDA BUYURTMA!**\n"
+                    f"🔔 <b>SIZ KUZATAYOTGAN YO'NALISHDA BUYURTMA!</b>\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
                     f"📍 Yo'nalish: #{from_city.upper()} ➡️ #{to_city.upper()}\n"
                     f"👤 Buyurtmachi: {user_mention}\n"
@@ -891,7 +896,7 @@ async def process_bot_private_message(event):
                 )
                 for d_id in driver_ids:
                     try:
-                        await bot_client.send_message(d_id, alert_msg, buttons=[inline_buttons] if inline_buttons else None)
+                        await bot_client.send_message(d_id, alert_msg, buttons=[inline_buttons] if inline_buttons else None, parse_mode='html')
                     except Exception:
                         pass
         except Exception:
