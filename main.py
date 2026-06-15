@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from telethon import TelegramClient, events, Button
 from telethon.tl.types import User, Channel
 from telethon.network import ConnectionTcpIntermediate
+from telethon.errors import UserNotParticipantError
 
 # Force standard streams to use UTF-8 to prevent encoding errors on Windows
 if sys.platform.startswith('win'):
@@ -280,6 +281,21 @@ def get_driver_routes(user_id):
     except Exception as e:
         print(f"❌ [BAZA XATO] Obunalarni olishda xato: {e}")
         return []
+
+async def is_user_driver(client, user_id):
+    """Foydalanuvchi haydovchilar guruhida bor yoki yo'qligini tekshirish"""
+    global target_group_entity
+    target = target_group_entity or TARGET_GROUP_raw
+    if not target:
+        return False
+    try:
+        await client.get_permissions(target, user_id)
+        return True
+    except UserNotParticipantError:
+        return False
+    except Exception as e:
+        logger.warning(f"Guruh a'zoligini tekshirishda xatolik: {e}")
+        return False
 
 def get_env_value(key):
     """Atrof-muhit o'zgaruvchisini yoki .env faylidagi qiymatni olish"""
@@ -739,18 +755,38 @@ async def process_bot_private_message(event):
     if not message_text:
         return
 
-    # Asosiy menyu tugmalari
+    # A'zolikni tekshirish
+    is_driver = await is_user_driver(event.client, event.sender_id)
+
+    # Asosiy menyu tugmalari (faqat haydovchilar uchun)
     keyboard = [
         [Button.text("🔎 Buyurtma qidirish", resize=True), Button.text("🔔 Bildirishnoma sozlash")]
-    ]
+    ] if is_driver else Button.clear()
+
+    # Agar haydovchi bo'lmagan foydalanuvchi haydovchi bo'limlariga kirmoqchi bo'lsa
+    if message_text.strip() in ["🔎 Buyurtma qidirish", "🔔 Bildirishnoma sozlash"]:
+        if not is_driver:
+            await event.respond(
+                "⚠️ **Ushbu bo'lim faqat haydovchilar uchun.**\n\n"
+                "Haydovchilar guruhiga a'zo bo'lmagan foydalanuvchilar bu menyudan foydalana olmaydi.",
+                buttons=Button.clear()
+            )
+            return
 
     # Agar foydalanuvchi /start yozgan bo'lsa yoki menyu tugmalaridan qaytsa
     if message_text.strip().lower() in ["/start", "back", "menyu"]:
-        welcome_msg = (
-            "🚕 **Assalomu alaykum! Toshkent-Xorazm taksi buyurtma botiga xush kelibsiz!**\n\n"
-            "Siz bu yerda haydovchi sifatida buyurtmalarni qidirishingiz yoki yangi buyurtmalar haqida bildirishnoma sozlashishingiz mumkin.\n\n"
-            "**Mijoz bo'lsangiz**, buyurtmangiz matnini shu yerga yozib yuboring (masalan: `Toshkentdan Urganchga 2 odam bor`)."
-        )
+        if is_driver:
+            welcome_msg = (
+                "🚕 **Assalomu alaykum! Toshkent-Xorazm taksi buyurtma botiga xush kelibsiz!**\n\n"
+                "Siz bu yerda haydovchi sifatida buyurtmalarni qidirishingiz yoki yangi buyurtmalar haqida bildirishnoma sozlashishingiz mumkin.\n\n"
+                "**Mijoz bo'lsangiz**, buyurtmangiz matnini shu yerga yozib yuboring (masalan: `Toshkentdan Urganchga 2 odam bor`)."
+            )
+        else:
+            welcome_msg = (
+                "🚕 **Assalomu alaykum! Toshkent-Xorazm taksi buyurtma botiga xush kelibsiz!**\n\n"
+                "Buyurtmangiz matnini shu yerga yozib yuboring (masalan: `Toshkentdan Urganchga 2 odam bor`).\n"
+                "Sizning buyurtmangiz haydovchilar guruhiga yuboriladi."
+            )
         await event.respond(welcome_msg, buttons=keyboard)
         return
 
@@ -863,8 +899,15 @@ async def process_bot_private_message(event):
 
 async def callback_handler(event):
     """Inline tugmalar bosilganda ishlash (Qidirish va Sozlash oynalari)"""
-    data = event.data.decode('utf-8')
     user_id = event.sender_id
+    
+    # A'zolikni tekshirish (faqat haydovchilar callback'larni bossin)
+    is_driver = await is_user_driver(event.client, user_id)
+    if not is_driver:
+        await event.answer("⚠️ Ushbu amal faqat guruh a'zolari (haydovchilar) uchun!", alert=True)
+        return
+
+    data = event.data.decode('utf-8')
     
     # --- BUYURTMA QIDIRISH (SEARCH) ---
     if data.startswith("search_from_"):
