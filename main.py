@@ -492,34 +492,48 @@ async def verify_target_group_access():
             pass
 
     has_access = False
-    # Bot orqali aniqlash
-    if bot_client:
-        try:
-            entity = await bot_client.get_entity(chat_id)
-            target_group_entity = entity
-            title = getattr(entity, 'title', 'Guruh')
-            target_group_ids.add(entity.id)
-            target_group_ids.add(int(str(entity.id).replace("-100", "")))
-            print(f"🤖 [BOT API] Nishon guruh topildi va keshlandi: '{title}' (ID: {entity.id})")
-            has_access = True
-        except Exception:
-            pass
-
-    # Userbotlar orqali aniqlash
-    for i, client in enumerate(clients):
-        try:
-            if not client.is_connected():
-                continue
-            entity = await client.get_entity(chat_id)
-            if target_group_entity is None:
+    
+    # Guruh keshini yuklash va aniqlash uchun 3 marta urinib ko'ramiz
+    for attempt in range(3):
+        # 1. Bot orqali aniqlash
+        if bot_client and bot_client.is_connected():
+            try:
+                if attempt > 0:
+                    await bot_client.get_dialogs()
+                entity = await bot_client.get_entity(chat_id)
                 target_group_entity = entity
-            title = getattr(entity, 'title', 'Guruh')
-            target_group_ids.add(entity.id)
-            target_group_ids.add(int(str(entity.id).replace("-100", "")))
-            print(f"👤 [AKKAUNT #{i+1}] Nishon guruh topildi va keshlandi: '{title}' (ID: {entity.id})")
-            has_access = True
-        except Exception:
-            pass
+                title = getattr(entity, 'title', 'Guruh')
+                target_group_ids.add(entity.id)
+                target_group_ids.add(int(str(entity.id).replace("-100", "")))
+                print(f"🤖 [BOT API] Nishon guruh topildi va keshlandi: '{title}' (ID: {entity.id})")
+                has_access = True
+                break
+            except Exception:
+                pass
+
+        # 2. Userbotlar orqali aniqlash
+        for i, client in enumerate(clients):
+            try:
+                if not client.is_connected():
+                    continue
+                if attempt > 0:
+                    await client.get_dialogs()
+                entity = await client.get_entity(chat_id)
+                if target_group_entity is None:
+                    target_group_entity = entity
+                title = getattr(entity, 'title', 'Guruh')
+                target_group_ids.add(entity.id)
+                target_group_ids.add(int(str(entity.id).replace("-100", "")))
+                print(f"👤 [AKKAUNT #{i+1}] Nishon guruh topildi va keshlandi: '{title}' (ID: {entity.id})")
+                has_access = True
+                break
+            except Exception:
+                pass
+                
+        if has_access:
+            break
+        # Agar birinchi urinishda guruh topilmasa, dialoglar yuklanishini kutib qayta urinib ko'ramiz
+        await asyncio.sleep(3)
             
     if not has_access:
         print("⚠️ [DIQQAT] Nishon guruh aniqlanmadi. Xabarlar faqat ID bo'yicha yuboriladi.")
