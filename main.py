@@ -722,6 +722,8 @@ async def process_message(event):
             peer_str = str(event.chat_id)
             if peer_str.startswith("-100"):
                 peer_str = peer_str[4:]
+            elif peer_str.startswith("-"):
+                peer_str = peer_str[1:]
             
             if getattr(chat, 'username', None):
                 chat_link = f"https://t.me/{chat.username}"
