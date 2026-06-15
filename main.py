@@ -3,6 +3,7 @@ import sys
 import shutil
 import logging
 import asyncio
+import re
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.tl.types import User, Channel
@@ -172,6 +173,10 @@ KEYWORDS = [kw.strip().lower() for kw in KEYWORDS_raw.split(",") if kw.strip()]
 # Bloklangan so'zlarni ro'yxatga olish
 BLOCK_WORDS = [bw.strip().lower() for bw in BLOCK_WORDS_raw.split(",") if bw.strip()]
 
+# Regex patterns for ultra-fast C-compiled matching
+keywords_pattern = re.compile('|'.join([re.escape(kw) for kw in KEYWORDS])) if KEYWORDS else None
+block_words_pattern = re.compile('|'.join([re.escape(bw) for bw in BLOCK_WORDS])) if BLOCK_WORDS else None
+
 print(f"ℹ️ [SOZLAMALAR] Yuklangan telefonlar: {PHONE_NUMBERS}")
 print(f"ℹ️ [SOZLAMALAR] Qidiriladigan so'zlar: {KEYWORDS}")
 print(f"ℹ️ [SOZLAMALAR] Bloklangan so'zlar: {BLOCK_WORDS}")
@@ -215,9 +220,12 @@ def is_duplicate(chat_id, msg_id):
         processed_messages.discard(oldest)
     return False
 
+# Nishon guruh ob'ekti (resolution kechikishining oldini olish uchun keshda saqlanadi)
+target_group_entity = None
+
 async def verify_target_group_access():
     """Nishon guruh haqiqiy ID sini aniqlash va ruxsatlarni tekshirish"""
-    global target_group_ids
+    global target_group_ids, target_group_entity
     
     val = TARGET_GROUP_raw
     chat_id = val
@@ -231,7 +239,6 @@ async def verify_target_group_access():
             else:
                 target_group_ids.add(int(f"-100{str_val}"))
             print(f"✅ [TIZIM] Nishon guruh ID raqami o'rnatildi: {val_int}")
-            return
         except Exception:
             pass
 
@@ -240,10 +247,11 @@ async def verify_target_group_access():
     if bot_client:
         try:
             entity = await bot_client.get_entity(chat_id)
+            target_group_entity = entity
             title = getattr(entity, 'title', 'Guruh')
             target_group_ids.add(entity.id)
             target_group_ids.add(int(str(entity.id).replace("-100", "")))
-            print(f"🤖 [BOT API] Nishon guruh topildi: '{title}' (ID: {entity.id})")
+            print(f"🤖 [BOT API] Nishon guruh topildi va keshlandi: '{title}' (ID: {entity.id})")
             has_access = True
         except Exception:
             pass
@@ -254,10 +262,12 @@ async def verify_target_group_access():
             if not client.is_connected():
                 continue
             entity = await client.get_entity(chat_id)
+            if target_group_entity is None:
+                target_group_entity = entity
             title = getattr(entity, 'title', 'Guruh')
             target_group_ids.add(entity.id)
             target_group_ids.add(int(str(entity.id).replace("-100", "")))
-            print(f"👤 [AKKAUNT #{i+1}] Nishon guruh topildi: '{title}' (ID: {entity.id})")
+            print(f"👤 [AKKAUNT #{i+1}] Nishon guruh topildi va keshlandi: '{title}' (ID: {entity.id})")
             has_access = True
         except Exception:
             pass
@@ -267,6 +277,8 @@ async def verify_target_group_access():
 
 async def send_to_target_group(message_text, reply_markup=None):
     """Xabarni drivers guruhiga yuborish (Bot yoki Userbotlar orqali)"""
+    global target_group_entity
+    
     val = TARGET_GROUP_raw
     chat_id = val
     if val.startswith("-100") or val.isdigit() or (val.startswith("-") and val[1:].isdigit()):
@@ -275,18 +287,21 @@ async def send_to_target_group(message_text, reply_markup=None):
         except ValueError:
             pass
 
+    # Keshdagi ob'ektdan foydalanamiz (agar mavjud bo'lsa, tezlikni oshirish uchun)
+    to_entity = target_group_entity if target_group_entity is not None else chat_id
+
     # 1. Bot Token orqali yuborish
     if bot_client and bot_client.is_connected():
         try:
             # Avval tugmalari (markup) bilan birga yuboramiz
-            await bot_client.send_message(chat_id, message_text, buttons=reply_markup, link_preview=False)
+            await bot_client.send_message(to_entity, message_text, buttons=reply_markup, link_preview=False)
             print("🚀 [YUBORILDI] Xabar Telegram Bot orqali (tugmalari bilan) drivers guruhiga jo'natildi.")
             return True
         except Exception as e:
             if reply_markup:
                 # Tugmalar bilan yuborish xato bersa (masalan callback tugma taqiqlangan bo'lsa), faqat matnni o'zini yuboramiz
                 try:
-                    await bot_client.send_message(chat_id, message_text, link_preview=False)
+                    await bot_client.send_message(to_entity, message_text, link_preview=False)
                     print(f"🚀 [YUBORILDI] Xabar Telegram Bot orqali (faqat matn, tugmalarsiz) jo'natildi. Tugma xatosi: {e}")
                     return True
                 except Exception as e2:
@@ -298,13 +313,13 @@ async def send_to_target_group(message_text, reply_markup=None):
     for i, client in enumerate(clients):
         if client.is_connected():
             try:
-                await client.send_message(chat_id, message_text, buttons=reply_markup, link_preview=False)
+                await client.send_message(to_entity, message_text, buttons=reply_markup, link_preview=False)
                 print(f"🚀 [YUBORILDI] Xabar Akkaunt #{i+1} ({PHONE_NUMBERS[i]}) orqali (tugmalari bilan) jo'natildi.")
                 return True
             except Exception as e:
                 if reply_markup:
                     try:
-                        await client.send_message(chat_id, message_text, link_preview=False)
+                        await client.send_message(to_entity, message_text, link_preview=False)
                         print(f"🚀 [YUBORILDI] Xabar Akkaunt #{i+1} ({PHONE_NUMBERS[i]}) orqali (faqat matn, tugmalarsiz) jo'natildi. Tugma xatosi: {e}")
                         return True
                     except Exception as e2:
@@ -333,28 +348,33 @@ async def process_message(event):
     message_text_lower = message_text.lower()
     
     # Bloklangan so'zlarni tekshirish (agar birortasi topilsa, xabarni tashlab yuboramiz)
-    for bw in BLOCK_WORDS:
-        if bw in message_text_lower:
-            return
+    if block_words_pattern and block_words_pattern.search(message_text_lower):
+        return
 
-    # Kalit so'z qidirish
+    # Kalit so'z qidirish (regex bilan C-darajasida juda tez ishlaydi)
     matched_keyword = None
-    for kw in KEYWORDS:
-        if kw in message_text_lower:
-            matched_keyword = kw
-            break
+    if keywords_pattern:
+        match = keywords_pattern.search(message_text_lower)
+        if match:
+            matched_keyword = match.group(0)
 
     # Agar kalit so'z topilmasa, bu yerda to'xtatamiz (tarmoq chaqiruvlari va printlarni chetlab o'tamiz)
     if not matched_keyword:
         return
 
-    # Xatolikka chidamli guruh ma'lumotlarini yig'ish (faqat kalit so'z mos kelganda tarmoq orqali olinadi)
+    # Guruh va yuboruvchi ma'lumotlarini parallel (concurrently) yuklab, tarmoq kechikishini 50% ga kamaytiramiz
+    chat_task = asyncio.create_task(event.get_chat()) if not event.chat else None
+    sender_task = asyncio.create_task(event.get_sender()) if not event.sender else None
+
+    # Xatolikka chidamli guruh ma'lumotlarini olish
     chat_title = "Guruh"
     chat_link = "Mavjud emas"
     msg_link = "Mavjud emas"
     
     try:
-        chat = event.chat or await event.get_chat()
+        chat = event.chat
+        if chat_task:
+            chat = await chat_task or event.chat
         if chat:
             chat_title = getattr(chat, 'title', 'Guruh')
             peer_str = str(event.chat_id)
@@ -370,14 +390,16 @@ async def process_message(event):
     except Exception:
         pass
 
-    # Yuboruvchi ma'lumotlarini yig'ish
+    # Yuboruvchi ma'lumotlarini olish
     sender_name = "Noma'lum"
     username_str = ""
     user_mention = "Mavjud emas"
     phone_str = ""
     
     try:
-        sender = event.sender or await event.get_sender()
+        sender = event.sender
+        if sender_task:
+            sender = await sender_task or event.sender
         if sender:
             if isinstance(sender, User):
                 first_name = sender.first_name or ""
