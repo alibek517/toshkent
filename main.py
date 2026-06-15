@@ -288,6 +288,15 @@ async def is_user_driver(client, user_id):
     target = target_group_entity or TARGET_GROUP_raw
     if not target:
         return False
+    
+    # Telethon string ID o'rniga integer ID talab qiladi, aks holda telefon raqami deb o'ylaydi
+    if isinstance(target, str):
+        clean_target = target.strip()
+        if clean_target.startswith("-") and clean_target[1:].isdigit():
+            target = int(clean_target)
+        elif clean_target.isdigit():
+            target = int(clean_target)
+            
     try:
         await client.get_permissions(target, user_id)
         return True
@@ -488,6 +497,7 @@ async def verify_target_group_access():
             else:
                 target_group_ids.add(int(f"-100{str_val}"))
             print(f"✅ [TIZIM] Nishon guruh ID raqami o'rnatildi: {val_int}")
+            chat_id = val_int  # Telethon string o'rniga integer ID bilan get_entity qilishi kerak
         except Exception:
             pass
 
