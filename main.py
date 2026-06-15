@@ -27,6 +27,62 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Userbot")
 
+import html
+
+# Asl print funksiyasini saqlab qolamiz
+original_print = print
+
+# Admin uchun loglar buferi
+log_buffer = []
+
+def print(*args, **kwargs):
+    # Asl print-ni terminalga chiqarish uchun chaqiramiz
+    original_print(*args, **kwargs)
+    try:
+        # Matn ko'rinishiga keltirib, buferga qo'shamiz
+        msg = " ".join(str(arg) for arg in args)
+        if msg:
+            log_buffer.append(msg)
+    except Exception:
+        pass
+
+async def admin_logger_loop():
+    global log_buffer, bot_client
+    # Bot ulanmaguncha kutib turamiz
+    while not bot_client or not bot_client.is_connected():
+        await asyncio.sleep(1)
+        
+    original_print(f"📡 [TIZIM] Admin log-uzatuvchi ishga tushdi (Admin: {ADMIN_ID})")
+    
+    while True:
+        try:
+            if log_buffer:
+                # Atomik nusxa olib keshni tozalaymiz
+                to_send = log_buffer[:]
+                del log_buffer[:]
+                
+                # Telegram limitiga moslab xabarlarni bo'laklaymiz
+                current_chunk = []
+                current_len = 0
+                for line in to_send:
+                    line_len = len(line) + 1
+                    if current_len + line_len > 3800:
+                        chunk_text = html.escape("\n".join(current_chunk))
+                        await bot_client.send_message(ADMIN_ID, f"📝 <b>Terminal Log:</b>\n<code>{chunk_text}</code>", parse_mode='html')
+                        current_chunk = [line]
+                        current_len = line_len
+                    else:
+                        current_chunk.append(line)
+                        current_len += line_len
+                
+                if current_chunk:
+                    chunk_text = html.escape("\n".join(current_chunk))
+                    await bot_client.send_message(ADMIN_ID, f"📝 <b>Terminal Log:</b>\n<code>{chunk_text}</code>", parse_mode='html')
+        except Exception as ex:
+            original_print(f"❌ Adminga log yuborishda xatolik: {ex}")
+            
+        await asyncio.sleep(4)
+
 ENV_FILE = ".env"
 SESSIONS_DIR = "sessions"
 
@@ -415,6 +471,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 KEYWORDS_raw = os.getenv("KEYWORDS", "odam bor,moshina kerak,pochta bor,tayyor odam,kler,yuk bor,transport kerak,taxi bormikan,taxi kerak")
 BLOCK_WORDS_raw = os.getenv("BLOCK_WORDS", "")
 DRIVER_WORDS_raw = os.getenv("DRIVER_WORDS", "")
+
+ADMIN_ID_raw = os.getenv("ADMIN_ID", "7748145808")
+try:
+    ADMIN_ID = int(ADMIN_ID_raw.strip())
+except Exception:
+    ADMIN_ID = 7748145808
 
 if not API_ID or not API_HASH or not PHONE_NUMBERS_raw:
     print("❌ XATOLIK: API_ID, API_HASH yoki PHONE_NUMBERS .env faylida ko'rsatilmagan!")
@@ -1058,6 +1120,7 @@ async def main():
             bot_client.add_event_handler(message_handler, events.NewMessage)
             bot_client.add_event_handler(callback_handler, events.CallbackQuery)
             print("🤖 [BOT] Telegram Bot muvaffaqiyatli ishga tushdi va ulandi!")
+            asyncio.create_task(admin_logger_loop())
         except Exception as e:
             print(f"❌ [BOT XATO] Bot Token orqali ulanishda xato: {e}")
 
