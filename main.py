@@ -5,7 +5,7 @@ import logging
 import asyncio
 import re
 from dotenv import load_dotenv
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, Button
 from telethon.tl.types import User, Channel
 from telethon.network import ConnectionTcpIntermediate
 
