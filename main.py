@@ -802,13 +802,26 @@ async def process_message(event):
 
     # Lichkaga o'tish va Original xabar inline tugmalari
     inline_buttons = []
+    has_contact = False
+    
     if username_str:
         clean_user = username_str.replace("@", "")
         inline_buttons.append(Button.url("💬 Lichkaga yozish", f"https://t.me/{clean_user}"))
+        has_contact = True
     elif final_phone:
         phone_digits = re.sub(r'\D', '', final_phone)
         if len(phone_digits) >= 9:
             inline_buttons.append(Button.url("💬 Lichkaga yozish", f"https://t.me/+{phone_digits}"))
+            has_contact = True
+            
+    # Agar na username, na telefon raqami bo'lsa, userbot orqali aloqa bog'lash tugmasini chiqaramiz
+    if not has_contact and sender_id:
+        client_index = 0
+        for idx, c in enumerate(clients):
+            if c == event.client:
+                client_index = idx
+                break
+        inline_buttons.append(Button.inline("💬 Menga yozishini so'rash", f"askpm_{sender_id}_{client_index}"))
             
     if msg_link and msg_link != "Mavjud emas":
         inline_buttons.append(Button.url("🔗 Original xabar", msg_link))
@@ -946,13 +959,19 @@ async def process_bot_private_message(event):
 
     # Lichkaga o'tish tugmasi
     inline_buttons = []
+    has_contact = False
     if username_str:
         clean_user = username_str.replace("@", "")
         inline_buttons.append(Button.url("💬 Lichkaga yozish", f"https://t.me/{clean_user}"))
+        has_contact = True
     elif phone_extracted:
         phone_digits = re.sub(r'\D', '', phone_extracted)
         if len(phone_digits) >= 9:
             inline_buttons.append(Button.url("💬 Lichkaga yozish", f"https://t.me/+{phone_digits}"))
+            has_contact = True
+            
+    if not has_contact and sender_id:
+        inline_buttons.append(Button.inline("💬 Menga yozishini so'rash", f"askpm_{sender_id}_bot"))
 
     # Guruhga yuboramiz
     sent = await send_to_target_group(report_msg, reply_markup=[inline_buttons] if inline_buttons else None)
@@ -1001,6 +1020,48 @@ async def callback_handler(event):
         return
 
     data = event.data.decode('utf-8')
+    
+    if data.startswith("askpm_"):
+        parts = data.split("_")
+        passenger_id = int(parts[1])
+        client_type = parts[2]
+        
+        # Haydovchi ma'lumotlari
+        driver = await event.get_sender()
+        driver_name = f"{getattr(driver, 'first_name', '') or ''} {getattr(driver, 'last_name', '') or ''}".strip() or "Haydovchi"
+        driver_username = getattr(driver, 'username', None)
+        
+        if driver_username:
+            driver_link = f"https://t.me/{driver_username}"
+        else:
+            driver_link = f"tg://user?id={event.sender_id}"
+            
+        pm_text = (
+            f"🚕 <b>Assalomu alaykum!</b>\n\n"
+            f"Siz taksi guruhida yozgan buyurtmangiz bo'yicha haydovchi siz bilan bog'lanmoqchi:\n"
+            f"👤 <b>Haydovchi:</b> <a href=\"{driver_link}\">{driver_name}</a>\n\n"
+            f"Bog'lanish uchun yuqoridagi haydovchi ustiga bosing va unga xabar yuboring."
+        )
+        
+        sent_ok = False
+        try:
+            if client_type == "bot":
+                if bot_client:
+                    await bot_client.send_message(passenger_id, pm_text, parse_mode='html')
+                    sent_ok = True
+            else:
+                client_idx = int(client_type)
+                if client_idx < len(clients):
+                    await clients[client_idx].send_message(passenger_id, pm_text, parse_mode='html')
+                    sent_ok = True
+        except Exception as e:
+            logger.warning(f"Mijozga yo'naltiruvchi xabar yuborishda xatolik: {e}")
+            
+        if sent_ok:
+            await event.answer("✅ Mijozga siz bilan bog'lanish haqida xabar yuborildi!", alert=True)
+        else:
+            await event.answer("❌ Mijoz bilan bog'lanib bo'lmadi (shaxsiy xabarlari yopiq bo'lishi mumkin).", alert=True)
+        return
     
     # --- BUYURTMA QIDIRISH (SEARCH) ---
     if data.startswith("search_from_"):
