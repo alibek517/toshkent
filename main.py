@@ -285,6 +285,19 @@ def get_active_orders(from_city, to_city, limit=10):
         print(f"❌ [BAZA XATO] Buyurtmalarni qidirishda xato: {e}")
         return []
 
+def get_order_by_user(user_id):
+    """Foydalanuvchining oxirgi buyurtma bergan guruh va xabar ID sini olish"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('SELECT chat_id, msg_id FROM orders WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (user_id,))
+        row = c.fetchone()
+        conn.close()
+        return row
+    except Exception as e:
+        print(f"❌ [BAZA XATO] Buyurtmani olishda xato: {e}")
+        return None
+
 def get_drivers_for_route(from_city, to_city):
     """Ushbu yo'nalish uchun bildirishnomani yoqib qo'ygan barcha haydovchilar ID sini olish"""
     try:
@@ -1044,14 +1057,33 @@ async def callback_handler(event):
         )
         
         sent_ok = False
+        
+        # Keshni yangilash uchun guruh xabarini yuklab olamiz (Access Hash olish uchun)
+        order = get_order_by_user(passenger_id)
+        orig_chat_id, orig_msg_id = (0, 0)
+        if order:
+            orig_chat_id, orig_msg_id = order
+            
         try:
             if client_type == "bot":
                 if bot_client:
+                    # Bot orqali keshni yangilash
+                    if orig_chat_id != 0:
+                        try:
+                            await bot_client.get_messages(orig_chat_id, ids=orig_msg_id)
+                        except Exception:
+                            pass
                     await bot_client.send_message(passenger_id, pm_text, parse_mode='html')
                     sent_ok = True
             else:
                 client_idx = int(client_type)
                 if client_idx < len(clients):
+                    # Userbot orqali keshni yangilash
+                    if orig_chat_id != 0:
+                        try:
+                            await clients[client_idx].get_messages(orig_chat_id, ids=orig_msg_id)
+                        except Exception:
+                            pass
                     await clients[client_idx].send_message(passenger_id, pm_text, parse_mode='html')
                     sent_ok = True
         except Exception as e:
